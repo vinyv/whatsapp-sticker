@@ -1,0 +1,3 @@
+@echo off
+echo Viewing WhatsApp Sticker Bot logs...
+pm2 logs wppbot
