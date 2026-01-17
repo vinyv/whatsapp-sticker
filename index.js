@@ -13,7 +13,6 @@ const path = require("path");
 const STICKER_PACK = "feito por viny.";
 const STICKER_AUTHOR = "viny";
 
-// Load icon from file (ICO format for Windows compatibility)
 const iconPath = path.join(__dirname, 'icon.ico');
 let TRAY_ICON = "";
 if (fs.existsSync(iconPath)) {
@@ -225,6 +224,7 @@ async function startBot() {
 
         await sock.sendMessage(chatId, {
           sticker: stickerBuffer,
+          isAvatar: true,
         });
 
         await sock.sendMessage(chatId, {
