@@ -80,4 +80,4 @@ const STICKER_AUTHOR = 'viny';            // Author name
 
 ## License
 
-MIT
+CC-NC
