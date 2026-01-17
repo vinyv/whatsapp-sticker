@@ -5,6 +5,7 @@ const {
   downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
 const { Sticker, StickerTypes } = require("wa-sticker-formatter");
+const SysTray = require("systray").default;
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
@@ -12,11 +13,59 @@ const path = require("path");
 const STICKER_PACK = "feito por viny.";
 const STICKER_AUTHOR = "viny";
 
+// Load icon from file (ICO format for Windows compatibility)
+const iconPath = path.join(__dirname, 'icon.ico');
+let TRAY_ICON = "";
+if (fs.existsSync(iconPath)) {
+  TRAY_ICON = fs.readFileSync(iconPath).toString('base64');
+}
+
+let systray = null;
+
+function createTray() {
+  if (!TRAY_ICON) {
+    console.log("Warning: Icon file not found, skipping tray icon");
+    return;
+  }
+
+  systray = new SysTray({
+    menu: {
+      icon: TRAY_ICON,
+      title: "",
+      tooltip: "WhatsApp Sticker Bot - Running",
+      items: [
+        {
+          title: "WhatsApp Sticker Bot",
+          tooltip: "Bot is running",
+          enabled: false,
+        },
+        {
+          title: "Exit",
+          tooltip: "Stop the bot",
+          enabled: true,
+        },
+      ],
+    },
+    debug: false,
+    copyDir: true,
+  });
+
+  systray.onClick((action) => {
+    if (action.seq_id === 1) {
+      // Exit clicked
+      console.log("Exiting...");
+      systray.kill(false);
+      process.exit(0);
+    }
+  });
+
+  console.log("System tray icon created.");
+}
+
 async function createSticker(buffer, isVideo = false) {
-  // Start with quality 50 and decrease if needed
   let quality = 50;
   let stickerBuffer;
-  const maxSize = isVideo ? 500000 : 100000; // 500KB for video, 100KB for static
+  const maxSize = isVideo ? 500000 : 100000;
 
   while (quality >= 10) {
     const sticker = new Sticker(buffer, {
@@ -106,7 +155,6 @@ async function startBot() {
       try {
         console.log("Sticker request received. Processing...");
 
-        // React with hourglass to show processing
         await sock.sendMessage(chatId, {
           react: { text: "⏳", key: msg.key }
         });
@@ -179,7 +227,6 @@ async function startBot() {
           sticker: stickerBuffer,
         });
 
-        // React with checkmark to show success
         await sock.sendMessage(chatId, {
           react: { text: "✅", key: msg.key }
         });
@@ -187,7 +234,6 @@ async function startBot() {
         console.log("Sticker sent successfully!");
       } catch (error) {
         console.error("Error processing sticker:", error.message);
-        // React with X to show error
         await sock.sendMessage(chatId, {
           react: { text: "❌", key: msg.key }
         });
@@ -197,4 +243,11 @@ async function startBot() {
 }
 
 console.log("Initializing WhatsApp bot...");
+
+// Only show tray icon if --tray flag is passed
+const showTray = process.argv.includes('--tray');
+if (showTray) {
+  createTray();
+}
+
 startBot();
