@@ -17,7 +17,7 @@ A local WhatsApp bot that converts images and videos to stickers using the `/s` 
 - Node.js v18 or higher
 - npm
 - FFmpeg (included via dependencies)
-- yt-dlp.exe (for video downloads - already included in the repo)
+- [yt-dlp.exe](https://github.com/yt-dlp/yt-dlp/releases) (in the root folder)
 
 ## Installation
 
