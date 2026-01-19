@@ -1,12 +1,13 @@
 # WhatsApp Sticker Bot
 
-A local WhatsApp bot that converts images and videos to stickers using the `/s` command.
+A local WhatsApp bot that converts images and videos to stickers using the `/s` command and downloads videos from URLs using the `/d` command.
 
 ## Features
 
 - 🖼️ Convert images to stickers
 - 🎬 Convert videos/GIFs to animated stickers
 - 💬 Reply to any media with `/s` to convert it
+- 📥 Download videos from YouTube, TikTok, Instagram, Twitter, and more with `/d`
 - 📦 Stickers include custom metadata ("feito por viny.")
 - 🔄 Auto-reconnect on disconnection
 - 🖥️ Background running support with pm2
@@ -16,6 +17,7 @@ A local WhatsApp bot that converts images and videos to stickers using the `/s` 
 - Node.js v18 or higher
 - npm
 - FFmpeg (included via dependencies)
+- yt-dlp.exe (for video downloads - already included in the repo)
 
 ## Installation
 
@@ -46,6 +48,21 @@ Scan the QR code with your WhatsApp app to link the bot.
 **Option 1:** Send an image/video with `/s` as the caption
 
 **Option 2:** Reply to any image/video message with `/s`
+
+### Downloading Videos
+
+Send a message with `/d <url>` to download a video from supported platforms:
+
+```
+/d https://www.youtube.com/watch?v=dQw4w9WgXcQ
+/d https://www.tiktok.com/@user/video/123456789
+/d https://www.instagram.com/reel/ABC123/
+/d https://twitter.com/user/status/123456789
+```
+
+**Supported platforms:** YouTube, TikTok, Instagram, Twitter/X, Facebook, Reddit, and [many more](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md).
+
+**Note:** Videos larger than 64MB will fail (WhatsApp limit).
 
 ### Background Running
 

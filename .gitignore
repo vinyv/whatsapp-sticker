@@ -1,3 +1,7 @@
 node_modules/
 .wwebjs_auth/
 .vscode/
+downloads/
+cookies.txt
+yt-dlp.exe
+yt-dlp-plugins/
