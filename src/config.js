@@ -135,6 +135,14 @@ const NOTION_API_KEY = env("NOTION_API_KEY", "");
 /** @type {string} Notion database ID for book club (from .env) */
 const NOTION_DB_ID = env("NOTION_DB_ID", "");
 
+// === Local Worker (cloud → local PC bridge) ===
+
+/** @type {string} URL of the local worker API (Cloudflare Tunnel or direct) */
+const LOCAL_WORKER_URL = env("LOCAL_WORKER_URL", "");
+
+/** @type {string} Shared secret for authenticating worker API requests */
+const LOCAL_WORKER_SECRET = env("LOCAL_WORKER_SECRET", "");
+
 module.exports = {
   // Sticker metadata
   STICKER_PACK,
@@ -184,4 +192,8 @@ module.exports = {
   // Notion
   NOTION_API_KEY,
   NOTION_DB_ID,
+
+  // Local Worker
+  LOCAL_WORKER_URL,
+  LOCAL_WORKER_SECRET,
 };

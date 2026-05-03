@@ -1,13 +1,18 @@
 /**
  * YouTube search command handler
- * Searches YouTube for a query, shows 5 results, and lets the user pick one.
+ * Searches YouTube via the local worker, shows 5 results, and lets the user pick one.
  * @module commands/search
  */
 
-const { downloadVideo, downloadAudio, downloadVideoFullRes } = require("../video");
-const { createReactHelper, sendWithBotReaction, logger, execFileAsync } = require("../utils");
-const { YTDLP_PATH, COOKIES_PATH, DOWNLOAD_TIMEOUT } = require("../config");
-const { execFile } = require("child_process");
+const { createReactHelper, sendWithBotReaction, logger } = require("../utils");
+const {
+    isWorkerOnline,
+    workerSearch,
+    workerDownload,
+    workerFullRes,
+    workerAudio,
+    workerPlay,
+} = require("../local-worker-client");
 
 /** @type {number} How long pending searches stay valid (60 seconds) */
 const SEARCH_EXPIRY_MS = 60000;
@@ -27,39 +32,6 @@ setInterval(() => {
         }
     }
 }, 30000);
-
-/**
- * Searches YouTube for a query and returns up to 5 results
- * @param {string} query - Search query
- * @returns {Promise<Array<{url: string, title: string}>>} Search results
- */
-async function searchYouTube(query) {
-    // ytsearch5: tells yt-dlp to return 5 YouTube results
-    // --print url --print title prints each result's URL and title on separate lines
-    const args = [
-        `ytsearch5:${query}`,
-        "--print", "url",
-        "--print", "title",
-        "--no-playlist",
-        "--no-warnings",
-        "--flat-playlist",
-        "--cookies", COOKIES_PATH,
-    ];
-
-    const { stdout } = await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
-    const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
-
-    // Lines alternate: url, title, url, title, ...
-    const results = [];
-    for (let i = 0; i < lines.length - 1; i += 2) {
-        results.push({
-            url: lines[i],
-            title: lines[i + 1],
-        });
-    }
-
-    return results.slice(0, 5);
-}
 
 /**
  * Checks if a message is a search reply (number 1-5 with a pending search)
@@ -96,7 +68,7 @@ function matchSearchReply(text, chatId) {
  * @param {object} msg - Message object
  * @param {string} chatId - Chat ID
  * @param {string} query - Search query
- * @param {string} command - Original command (d, dd, da, dda)
+ * @param {string} command - Original command (d, dd, da, dda, p)
  */
 async function handleSearchCommand(sock, msg, chatId, query, command) {
     const react = createReactHelper(sock, chatId, msg.key);
@@ -105,7 +77,17 @@ async function handleSearchCommand(sock, msg, chatId, query, command) {
         logger.info(`YouTube search request: "${query}" (command: ${command})`);
         await react("🔍");
 
-        const results = await searchYouTube(query);
+        // Check worker health
+        const online = await isWorkerOnline();
+        if (!online) {
+            await react("⚠️");
+            await sendWithBotReaction(sock, chatId, {
+                text: "⚠️ Local server offline. Search is unavailable right now.",
+            });
+            return;
+        }
+
+        const results = await workerSearch(query);
 
         if (results.length === 0) {
             await react("❌");
@@ -130,39 +112,12 @@ async function handleSearchCommand(sock, msg, chatId, query, command) {
     } catch (error) {
         logger.error("YouTube search error:", error.message);
         await react("❌");
-        await sendWithBotReaction(sock, chatId, { text: "❌ Search failed. Try again." });
+        await sendWithBotReaction(sock, chatId, { text: `❌ ${error.message}` });
     }
 }
 
 /**
- * Wakes the monitor using Win32 SendMessage API via a PowerShell script.
- * Uses execFile (no shell) to avoid command injection.
- */
-function wakeMonitor() {
-    const psScript = `Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class WakeHelper{[DllImport("user32.dll")]public static extern int SendMessage(int hWnd,int hMsg,int wParam,int lParam);}';[WakeHelper]::SendMessage(-1,0x0112,0xF170,-1)`;
-    execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", psScript], (err) => {
-        if (err) {
-            logger.warn("Monitor wake failed:", err.message);
-        } else {
-            logger.info("Sent monitor wake signal");
-        }
-    });
-}
-
-/**
- * Opens a URL in Microsoft Edge safely (no shell injection)
- * @param {string} url - URL to open
- */
-function openInEdge(url) {
-    execFile("cmd", ["/c", "start", "msedge", url], (err) => {
-        if (err) {
-            logger.warn("Failed to open Edge:", err.message);
-        }
-    });
-}
-
-/**
- * Handles a search reply — downloads the selected result
+ * Handles a search reply — downloads or plays the selected result
  *
  * @param {object} sock - WhatsApp socket connection
  * @param {object} msg - Message object
@@ -187,18 +142,15 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
         await react("⏳");
 
         if (isPlay) {
-            // Wake the monitor (audio output goes through it)
-            wakeMonitor();
-
-            // Open in MS Edge (safe, no shell interpolation)
-            openInEdge(selected.url);
+            // Delegate to local worker: open in Edge + wake monitor
+            await workerPlay(selected.url);
             logger.info("Opened in Edge:", selected.url);
 
             await sendWithBotReaction(sock, chatId, {
                 text: `▶️ *Now playing:* ${selected.title}`,
             });
         } else if (isAudio) {
-            const audioBuffer = await downloadAudio(selected.url, keepFile);
+            const audioBuffer = await workerAudio(selected.url, keepFile);
             logger.info("Audio downloaded, size:", audioBuffer.length, "bytes");
 
             await sendWithBotReaction(sock, chatId, {
@@ -207,7 +159,7 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
                 ptt: false,
             });
         } else if (isDocFile) {
-            const { buffer: videoBuffer, title, fileName } = await downloadVideoFullRes(selected.url);
+            const { buffer: videoBuffer, title, fileName } = await workerFullRes(selected.url);
             logger.info("Full-res video downloaded, size:", videoBuffer.length, "bytes");
 
             await sendWithBotReaction(sock, chatId, {
@@ -217,7 +169,7 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
                 caption: title || undefined,
             });
         } else {
-            const { buffer: videoBuffer, title } = await downloadVideo(selected.url, keepFile);
+            const { buffer: videoBuffer, title } = await workerDownload(selected.url, keepFile);
             logger.info("Video downloaded, size:", videoBuffer.length, "bytes");
 
             const sendPayload = {
@@ -237,7 +189,7 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
         const typeLabel = isPlay ? "play" : (isDocFile ? "full-res video" : (isAudio ? "audio" : "video"));
         logger.error(`Error handling ${typeLabel} from search:`, error.message);
         await react("❌");
-        await sendWithBotReaction(sock, chatId, { text: "❌ Failed to process. Try again." });
+        await sendWithBotReaction(sock, chatId, { text: `❌ ${error.message}` });
     }
 }
 

@@ -1,17 +1,20 @@
 /**
- * WhatsApp Sticker Bot - Main Entry Point
+ * WhatsApp Sticker Bot - Main Entry Point (Cloud Version)
  *
- * A bot that creates stickers from images/videos and downloads videos from URLs.
+ * Runs on Oracle Cloud. Video/download operations are delegated
+ * to the local worker API via Cloudflare Tunnel.
  *
  * Commands:
- *   /s - Convert image/video to sticker (as caption or reply)
- *   /d <url> - Download video and send
- *   /dd <url> - Download video and keep file
- *   /da <url> - Download audio (MP3) and send
- *   /dda <url> - Download audio (MP3) and keep file
- *   /p <query> - Search YouTube and play in Edge
- *   /v <0-100> - Set YouTube player volume
- *   /clube - Book club main menu
+ *   /s - Convert image/video to sticker (runs on cloud)
+ *   /d <url> - Download video and send (via local worker)
+ *   /dd <url> - Download video and keep file (via local worker)
+ *   /da <url> - Download audio (MP3) and send (via local worker)
+ *   /dda <url> - Download audio (MP3) and keep file (via local worker)
+ *   /ds <url> - Download video and create sticker (download: local, sticker: cloud)
+ *   /df <url> - Download full-res video as document (via local worker)
+ *   /p <query> - Search YouTube and play in Edge (via local worker)
+ *   /v <0-100> - Set YouTube player volume (via local worker)
+ *   /clube - Book club main menu (runs on cloud)
  *   /cancelar - Cancel active flow
  *
  * @author viny
@@ -29,9 +32,7 @@ const fs = require("fs");
 // Local modules
 const { AUTH_DIR } = require("./src/config");
 const { logger } = require("./src/utils");
-const { createTray, killTray } = require("./src/tray");
 const { getSession } = require("./src/session");
-const { startWebSocketServer } = require("./src/websocket");
 const {
   matchDownloadCommand,
   handleDownloadCommand,
@@ -58,7 +59,6 @@ function handleShutdown(signal) {
   isShuttingDown = true;
 
   logger.info(`Received ${signal}, shutting down gracefully...`);
-  killTray();
 
   // Give a moment for cleanup
   setTimeout(() => {
@@ -233,17 +233,10 @@ async function handleMessage(sock, msg) {
 
 // === Main Execution ===
 
-logger.info("Initializing WhatsApp bot...");
-
-// Only show tray icon if --tray flag is passed
-const showTray = process.argv.includes("--tray");
+logger.info("Initializing WhatsApp bot (cloud mode)...");
 
 // Start the bot with proper error handling
 (async () => {
-  if (showTray) {
-    await createTray();
-  }
-  startWebSocketServer();
   await startBot();
 })().catch((err) => {
   logger.error("Fatal error starting bot:", err);

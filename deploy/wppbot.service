@@ -1,0 +1,26 @@
+[Unit]
+Description=WppBot WhatsApp Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wppbot
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+
+# Environment
+Environment=NODE_ENV=production
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wppbot
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

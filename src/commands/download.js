@@ -1,13 +1,20 @@
 /**
  * Video download command handler
+ * Delegates to the local worker API for yt-dlp/FFmpeg operations.
  * @module commands/download
  */
 
-const { downloadVideo, downloadAudio, downloadMediaForSticker, downloadVideoFullRes } = require("../video");
 const { createSticker } = require("../sticker");
 const { handleSearchCommand } = require("./search");
 const { createReactHelper, sendWithBotReaction, isValidUrl, logger, Semaphore } = require("../utils");
 const { RATE_LIMIT_MS, MAX_CONCURRENT_DOWNLOADS } = require("../config");
+const {
+    isWorkerOnline,
+    workerDownload,
+    workerFullRes,
+    workerAudio,
+    workerDownloadStickerSource,
+} = require("../local-worker-client");
 
 /** @type {RegExp} Matches /d, /dd, /da, /dda, /ds, /df, or /p followed by a URL or query */
 const DOWNLOAD_PATTERN = /^\/(d(?:d|a|da|s|f)?|p)\s+(.+)$/i;
@@ -107,6 +114,17 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
         return true;
     }
 
+    // Check if local worker is online before starting
+    const online = await isWorkerOnline();
+    if (!online) {
+        downloadSemaphore.release();
+        await react("⚠️");
+        await sendWithBotReaction(sock, chatId, {
+            text: "⚠️ Local server offline. Downloads are unavailable right now.",
+        });
+        return true;
+    }
+
     // Track this download
     lastDownloadTime.set(chatId, Date.now());
 
@@ -121,7 +139,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
         await react("⏳");
 
         if (isAudio) {
-            const audioBuffer = await downloadAudio(url, keepFile);
+            const audioBuffer = await workerAudio(url, keepFile);
             logger.info("Audio downloaded, size:", audioBuffer.length, "bytes");
 
             await sendWithBotReaction(sock, chatId, {
@@ -130,7 +148,8 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
                 ptt: false,  // Send as audio file, not voice note
             });
         } else if (isSticker) {
-            const videoBuffer = await downloadMediaForSticker(url);
+            // Download video source from local worker, then create sticker on cloud
+            const videoBuffer = await workerDownloadStickerSource(url);
             logger.info("Sticker source downloaded, size:", videoBuffer.length, "bytes");
 
             const stickerBuffer = await createSticker(videoBuffer, true);
@@ -140,7 +159,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
                 sticker: stickerBuffer,
             });
         } else if (isDocFile) {
-            const { buffer: videoBuffer, title, fileName } = await downloadVideoFullRes(url);
+            const { buffer: videoBuffer, title, fileName } = await workerFullRes(url);
             logger.info("Full-res video downloaded, size:", videoBuffer.length, "bytes");
 
             await sendWithBotReaction(sock, chatId, {
@@ -150,7 +169,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
                 caption: title || undefined,
             });
         } else {
-            const { buffer: videoBuffer, title } = await downloadVideo(url, keepFile);
+            const { buffer: videoBuffer, title } = await workerDownload(url, keepFile);
             logger.info("Video downloaded, size:", videoBuffer.length, "bytes");
 
             const sendPayload = {
@@ -170,7 +189,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
         const typeLabel = isDocFile ? "full-res video" : (isAudio ? "audio" : (isSticker ? "sticker" : "video"));
         logger.error(`Error downloading ${typeLabel}:`, error.message);
         await react("❌");
-        await sendWithBotReaction(sock, chatId, { text: `❌ Failed to download ${typeLabel}. Try again later.` });
+        await sendWithBotReaction(sock, chatId, { text: `❌ ${error.message}` });
     } finally {
         // Always release semaphore
         downloadSemaphore.release();

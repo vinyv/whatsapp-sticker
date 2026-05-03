@@ -1,0 +1,14 @@
+{
+  "name": "wppbot-local-worker",
+  "version": "1.0.0",
+  "description": "Local worker API for WppBot — handles yt-dlp downloads, video encoding, Edge playback",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.1.0"
+  }
+}

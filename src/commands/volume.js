@@ -1,11 +1,11 @@
 /**
  * YouTube volume control command handler.
- * Controls YouTube player volume via the connected Edge extension.
+ * Delegates to the local worker which controls the Edge extension via WebSocket.
  * @module commands/volume
  */
 
 const { createReactHelper, sendWithBotReaction, logger } = require("../utils");
-const { broadcast, isConnected } = require("../websocket");
+const { isWorkerOnline, workerVolume } = require("../local-worker-client");
 
 /** @type {RegExp} Matches /v followed by a number (0-100) */
 const VOLUME_PATTERN = /^\/v\s+(\d+)$/i;
@@ -39,21 +39,19 @@ async function handleVolumeCommand(sock, msg, chatId, match) {
         return;
     }
 
-    if (!isConnected()) {
-        await react("❌");
+    // Check worker health
+    const online = await isWorkerOnline();
+    if (!online) {
+        await react("⚠️");
         await sendWithBotReaction(sock, chatId, {
-            text: "❌ YouTube extension not connected. Make sure Edge is open with the extension loaded.",
+            text: "⚠️ Local server offline. Volume control is unavailable right now.",
         });
         return;
     }
 
     try {
         logger.info(`Setting YouTube volume to ${level}%`);
-
-        broadcast({
-            type: "setVolume",
-            value: level / 100, // YouTube player uses 0.0–1.0
-        });
+        await workerVolume(level);
 
         const emoji = level === 0 ? "🔇" : level <= 30 ? "🔈" : level <= 70 ? "🔉" : "🔊";
         await react(emoji);
@@ -64,7 +62,7 @@ async function handleVolumeCommand(sock, msg, chatId, match) {
         logger.error("Volume command error:", error.message);
         await react("❌");
         await sendWithBotReaction(sock, chatId, {
-            text: `❌ Error: ${error.message}`,
+            text: `❌ ${error.message}`,
         });
     }
 }

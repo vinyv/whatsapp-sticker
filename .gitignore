@@ -8,3 +8,8 @@ yt-dlp-plugins/
 .env
 data/
 icon.ico
+start-background.bat
+stop-background.bat
+view-logs.bat
+local-worker/node_modules/
+local-worker/.env
