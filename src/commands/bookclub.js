@@ -61,7 +61,8 @@ const MENU_TEXT =
     `*7.* 🎲 Sortear próximo\n` +
     `*8.* ▶️ Iniciar leitura\n` +
     `*9.* 📚 Ver livros lidos\n` +
-    `*10.* 🗑️ Deletar livro\n\n` +
+    `*10.* 🗑️ Deletar livro\n` +
+    `*11.* 📋 Ver fila de leitura\n\n` +
     `_Responda com o número da opção_\n` +
     `_ou use /cancelar para sair_`;
 
@@ -77,6 +78,7 @@ const MENU_ACTIONS = {
     8: "iniciar",
     9: "lidos",
     10: "deletar",
+    11: "fila",
 };
 
 // ============================================================
@@ -268,6 +270,21 @@ async function doLidos(sock, chatId) {
         }
         await sendWithBotReaction(sock, chatId, { text });
     }
+}
+
+async function doFila(sock, chatId) {
+    const pending = getPendingBooks();
+    if (pending.length === 0) {
+        await sendWithBotReaction(sock, chatId, {
+            text: "❌ Nenhum livro na fila de leitura!\nUse /sugerir para adicionar.",
+        });
+        return;
+    }
+    let text = `📋 *Fila de Leitura:*\n`;
+    pending.forEach((book, i) => {
+        text += `\n*${i + 1}.* 📖 ${book.titulo} — ${book.autor} (${book.total_paginas || "?"} pág.)`;
+    });
+    await sendWithBotReaction(sock, chatId, { text });
 }
 
 async function doProgresso(sock, msg, chatId, args) {
@@ -555,7 +572,7 @@ async function handleMenuStep(sock, msg, chatId, userId, text) {
 
     if (!action) {
         await sendWithBotReaction(sock, chatId, {
-            text: "❌ Opção inválida. Responda com um número de 1 a 10.\nOu use /cancelar para sair.",
+            text: "❌ Opção inválida. Responda com um número de 1 a 11.\nOu use /cancelar para sair.",
         });
         return true;
     }
@@ -934,6 +951,9 @@ async function dispatchAction(sock, msg, chatId, userId, action, args) {
         case "lidos":
             await doLidos(sock, chatId);
             break;
+        case "fila":
+            await doFila(sock, chatId);
+            break;
         case "deletar":
             await startDeletar(sock, chatId, userId);
             break;
@@ -945,7 +965,7 @@ async function dispatchAction(sock, msg, chatId, userId, action, args) {
 // ============================================================
 
 const BOOKCLUB_PATTERN =
-    /^\/(clube|iniciar|sugerir|review|quote|progresso|sortear|adiar|status|lidos|encerrar|deletar|cancelar|nome|ajuda|sync|groupid)(?:\s+(.*))?$/i;
+    /^\/(clube|iniciar|sugerir|review|quote|progresso|sortear|adiar|status|lidos|encerrar|deletar|fila|cancelar|nome|ajuda|sync|groupid)(?:\s+(.*))?$/i;
 
 function matchBookClubCommand(text) {
     return text.match(BOOKCLUB_PATTERN);
