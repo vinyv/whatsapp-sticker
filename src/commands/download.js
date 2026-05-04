@@ -159,12 +159,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
             if (useLocalFallback) {
                 // Download directly on cloud VM using local video.js
                 const { downloadMediaForSticker } = require("../video");
-                const fs = require("fs");
-                const videoPath = await downloadMediaForSticker(url);
-                videoBuffer = fs.readFileSync(videoPath);
-                
-                // Cleanup the downloaded source file
-                try { fs.unlinkSync(videoPath); } catch (e) { logger.warn("Failed to cleanup sticker source:", e.message); }
+                videoBuffer = await downloadMediaForSticker(url);
                 logger.info("Sticker source downloaded (cloud fallback), size:", videoBuffer.length, "bytes");
             } else {
                 // Download video source from local worker via API
