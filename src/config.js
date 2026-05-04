@@ -105,7 +105,7 @@ const ROOT_DIR = path.join(__dirname, "..");
 const DOWNLOADS_DIR = env("DOWNLOADS_DIR", path.join(ROOT_DIR, "downloads"));
 
 /** @type {string} Path to yt-dlp executable */
-const YTDLP_PATH = env("YTDLP_PATH", path.join(ROOT_DIR, "yt-dlp.exe"));
+const YTDLP_PATH = env("YTDLP_PATH", process.platform === "win32" ? path.join(ROOT_DIR, "yt-dlp.exe") : "yt-dlp");
 
 /** @type {string} Path to cookies file for yt-dlp */
 const COOKIES_PATH = env("COOKIES_PATH", path.join(ROOT_DIR, "cookies.txt"));

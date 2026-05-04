@@ -116,13 +116,20 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
 
     // Check if local worker is online before starting
     const online = await isWorkerOnline();
+    let useLocalFallback = false;
+
     if (!online) {
-        downloadSemaphore.release();
-        await react("⚠️");
-        await sendWithBotReaction(sock, chatId, {
-            text: "⚠️ Local server offline. Downloads are unavailable right now.",
-        });
-        return true;
+        if (isSticker) {
+            logger.info("Worker offline. Falling back to local cloud execution for /ds");
+            useLocalFallback = true;
+        } else {
+            downloadSemaphore.release();
+            await react("⚠️");
+            await sendWithBotReaction(sock, chatId, {
+                text: "⚠️ Local server offline. Downloads are unavailable right now.",
+            });
+            return true;
+        }
     }
 
     // Track this download
@@ -148,9 +155,22 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
                 ptt: false,  // Send as audio file, not voice note
             });
         } else if (isSticker) {
-            // Download video source from local worker, then create sticker on cloud
-            const videoBuffer = await workerDownloadStickerSource(url);
-            logger.info("Sticker source downloaded, size:", videoBuffer.length, "bytes");
+            let videoBuffer;
+            if (useLocalFallback) {
+                // Download directly on cloud VM using local video.js
+                const { downloadMediaForSticker } = require("../video");
+                const fs = require("fs");
+                const videoPath = await downloadMediaForSticker(url);
+                videoBuffer = fs.readFileSync(videoPath);
+                
+                // Cleanup the downloaded source file
+                try { fs.unlinkSync(videoPath); } catch (e) { logger.warn("Failed to cleanup sticker source:", e.message); }
+                logger.info("Sticker source downloaded (cloud fallback), size:", videoBuffer.length, "bytes");
+            } else {
+                // Download video source from local worker via API
+                videoBuffer = await workerDownloadStickerSource(url);
+                logger.info("Sticker source downloaded, size:", videoBuffer.length, "bytes");
+            }
 
             const stickerBuffer = await createSticker(videoBuffer, true);
             logger.info("Sticker created, size:", stickerBuffer.length, "bytes");
