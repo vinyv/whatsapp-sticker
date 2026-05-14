@@ -66,7 +66,11 @@ async function downloadVideo(url, keepFile = false) {
                 titleArgs.push("--cookies", COOKIES_PATH);
             }
             titleArgs.push(url);
-            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, { timeout: DOWNLOAD_TIMEOUT });
+            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
+                timeout: DOWNLOAD_TIMEOUT,
+                encoding: "utf8",
+                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+            });
             title = stdout.trim();
             logger.info("Video title:", title);
         } catch (err) {
@@ -472,7 +476,11 @@ async function downloadVideoFullRes(url, keepFile = false) {
                 titleArgs.push("--cookies", COOKIES_PATH);
             }
             titleArgs.push(url);
-            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, { timeout: DOWNLOAD_TIMEOUT });
+            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
+                timeout: DOWNLOAD_TIMEOUT,
+                encoding: "utf8",
+                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+            });
             title = stdout.trim();
             logger.info("Video title (full res):", title);
         } catch (err) {

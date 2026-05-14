@@ -36,6 +36,12 @@ const app = express();
 // Body size limit: 100MB (for large video buffers)
 app.use(express.json({ limit: "100mb" }));
 
+// === Health Check ===
+
+app.get("/health", (req, res) => {
+    res.json({ status: "ok", timestamp: Date.now() });
+});
+
 // === Authentication Middleware ===
 
 function authMiddleware(req, res, next) {
@@ -52,12 +58,6 @@ function authMiddleware(req, res, next) {
 }
 
 app.use(authMiddleware);
-
-// === Health Check ===
-
-app.get("/health", (req, res) => {
-    res.json({ status: "ok", timestamp: Date.now() });
-});
 
 // === Video Download ===
 
@@ -157,7 +157,11 @@ app.post("/search", async (req, res) => {
             "--cookies", COOKIES_PATH,
         ];
 
-        const { stdout } = await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
+        const { stdout } = await execFileAsync(YTDLP_PATH, args, {
+            timeout: DOWNLOAD_TIMEOUT,
+            encoding: "utf8",
+            env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+        });
         const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
 
         // Lines alternate: url, title, url, title, ...
