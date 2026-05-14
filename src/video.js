@@ -61,7 +61,8 @@ async function downloadVideo(url, keepFile = false) {
         // Fetch the video title first
         let title = "";
         try {
-            const titleArgs = ["--print", "title", "--no-playlist", "--no-warnings"];
+            // Use -j (JSON dump) to avoid Windows codepage mangling non-ASCII titles
+            const titleArgs = ["-j", "--no-playlist", "--no-warnings"];
             if (needsCookies(url)) {
                 titleArgs.push("--cookies", COOKIES_PATH);
             }
@@ -69,9 +70,10 @@ async function downloadVideo(url, keepFile = false) {
             const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
                 timeout: DOWNLOAD_TIMEOUT,
                 encoding: "utf8",
-                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+                env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
             });
-            title = stdout.trim();
+            const info = JSON.parse(stdout);
+            title = info.title || "";
             logger.info("Video title:", title);
         } catch (err) {
             logger.warn("Could not fetch video title:", err.message);
@@ -471,7 +473,8 @@ async function downloadVideoFullRes(url, keepFile = false) {
         // Fetch the video title first
         let title = "";
         try {
-            const titleArgs = ["--print", "title", "--no-playlist", "--no-warnings"];
+            // Use -j (JSON dump) to avoid Windows codepage mangling non-ASCII titles
+            const titleArgs = ["-j", "--no-playlist", "--no-warnings"];
             if (needsCookies(url)) {
                 titleArgs.push("--cookies", COOKIES_PATH);
             }
@@ -479,9 +482,10 @@ async function downloadVideoFullRes(url, keepFile = false) {
             const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
                 timeout: DOWNLOAD_TIMEOUT,
                 encoding: "utf8",
-                env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+                env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
             });
-            title = stdout.trim();
+            const info = JSON.parse(stdout);
+            title = info.title || "";
             logger.info("Video title (full res):", title);
         } catch (err) {
             logger.warn("Could not fetch video title:", err.message);

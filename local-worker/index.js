@@ -149,28 +149,31 @@ app.post("/search", async (req, res) => {
 
         const args = [
             `ytsearch5:${query}`,
-            "--print", "url",
-            "--print", "title",
-            "--no-playlist",
-            "--no-warnings",
+            "-j",                       // JSON output (always UTF-8)
             "--flat-playlist",
+            "--no-warnings",
             "--cookies", COOKIES_PATH,
         ];
 
         const { stdout } = await execFileAsync(YTDLP_PATH, args, {
             timeout: DOWNLOAD_TIMEOUT,
             encoding: "utf8",
-            env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+            env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
         });
-        const lines = stdout.trim().split("\n").map(l => l.trim()).filter(Boolean);
+        const lines = stdout.trim().split("\n").filter(Boolean);
 
-        // Lines alternate: url, title, url, title, ...
+        // Each line is a JSON object with url/title fields
         const results = [];
-        for (let i = 0; i < lines.length - 1; i += 2) {
-            results.push({
-                url: lines[i],
-                title: lines[i + 1],
-            });
+        for (const line of lines) {
+            try {
+                const info = JSON.parse(line);
+                results.push({
+                    url: info.url || info.webpage_url || "",
+                    title: info.title || "",
+                });
+            } catch {
+                // Skip malformed lines
+            }
         }
 
         res.json({ results: results.slice(0, 5) });
