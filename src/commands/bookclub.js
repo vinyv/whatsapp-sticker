@@ -474,9 +474,11 @@ async function startSugerir(sock, chatId, userId, query) {
         await sendWithBotReaction(sock, chatId, { text });
     } catch (error) {
         logger.error("Google Books search failed:", error.message);
-        await sendWithBotReaction(sock, chatId, {
-            text: `❌ Erro ao buscar: ${error.message}`,
-        });
+        const isTransient = /5\d{2}|timeout|indisponível/i.test(error.message);
+        const userMsg = isTransient
+            ? `⚠️ O Google Books está temporariamente indisponível. Tente novamente em alguns minutos.`
+            : `❌ Erro ao buscar: ${error.message}`;
+        await sendWithBotReaction(sock, chatId, { text: userMsg });
     }
 }
 
