@@ -45,6 +45,8 @@ const {
   handleSessionStep,
   matchVolumeCommand,
   handleVolumeCommand,
+  matchSpotifyLink,
+  handleSpotifyToAppleMusic,
 } = require("./src/commands");
 
 // === Graceful Shutdown ===
@@ -205,21 +207,28 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // 4. Volume command (/v)
+  // 4. Spotify → Apple Music auto-convert (no command prefix needed)
+  const spotifyUrl = matchSpotifyLink(text);
+  if (spotifyUrl) {
+    await handleSpotifyToAppleMusic(sock, msg, chatId, spotifyUrl);
+    return;
+  }
+
+  // 5. Volume command (/v)
   const volumeMatch = matchVolumeCommand(textMessage);
   if (volumeMatch) {
     await handleVolumeCommand(sock, msg, chatId, volumeMatch);
     return;
   }
 
-  // 5. Download commands (/d, /dd, /da, /dda, /p)
+  // 6. Download commands (/d, /dd, /da, /dda, /p)
   const downloadMatch = matchDownloadCommand(textMessage);
   if (downloadMatch) {
     await handleDownloadCommand(sock, msg, chatId, downloadMatch);
     return;
   }
 
-  // 6. Sticker commands (/s)
+  // 7. Sticker commands (/s)
   const { isDirectCommand, isReplyCommand } = matchStickerCommand(caption, textMessage);
   if (isDirectCommand || isReplyCommand) {
     await handleStickerCommand(sock, msg, chatId, {
