@@ -3,8 +3,8 @@
  * Auto-detects Spotify URLs in messages and replies with the Apple Music equivalent.
  *
  * Strategy (no API keys needed):
- *   1. Read the title/artist from the Spotify page's Open Graph tags
- *      (the same metadata WhatsApp uses for link previews)
+ *   1. Read the title/artist from Spotify's embed player page, falling back to
+ *      the regular page's Open Graph tags and then oEmbed
  *   2. Look it up with the iTunes Search API
  *
  * Odesli (song.link) used to do this, but its keyless public API was
@@ -138,26 +138,108 @@ function parseSpotifyPage(html, finalUrl) {
     return { type, title, artist: type === "artist" ? title : artist };
 }
 
+/** @type {RegExp} Pulls type + ID out of an open.spotify.com URL (with or without /intl-xx/ or /embed/) */
+const SPOTIFY_ID_PATTERN =
+    /open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?(?:embed\/)?(track|album|playlist|artist)\/([a-zA-Z0-9]+)/i;
+
 /**
- * Fetches and parses a Spotify page
+ * Resolves any Spotify link (including spotify.link short links) to its type and ID
+ * @param {string} spotifyUrl
+ * @returns {Promise<{ type: string, id: string }>}
+ */
+async function resolveSpotifyId(spotifyUrl) {
+    let m = spotifyUrl.match(SPOTIFY_ID_PATTERN);
+    if (!m) {
+        // Short link: follow redirects, then look in the final URL or the page body
+        const res = await fetchOk(spotifyUrl);
+        m = (res.url || "").match(SPOTIFY_ID_PATTERN) || (await res.text()).match(SPOTIFY_ID_PATTERN);
+    }
+    if (!m) throw new Error("couldn't resolve the Spotify link");
+    return { type: m[1].toLowerCase(), id: m[2] };
+}
+
+/**
+ * Parses the embed player page, which ships the entity as JSON in __NEXT_DATA__:
+ *   props.pageProps.state.data.entity = { name, artists: [{ name }], subtitle, ... }
+ *
+ * @param {string} html - Embed page HTML
+ * @returns {{ title: string|null, artist: string|null }}
+ */
+function parseSpotifyEmbed(html) {
+    const m = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+    if (!m) return { title: null, artist: null };
+
+    let entity;
+    try {
+        const data = JSON.parse(m[1]);
+        entity = data?.props?.pageProps?.state?.data?.entity || data?.props?.pageProps?.entity;
+    } catch {
+        return { title: null, artist: null };
+    }
+    if (!entity) return { title: null, artist: null };
+
+    const artists = Array.isArray(entity.artists)
+        ? entity.artists.map((a) => a?.name).filter(Boolean).join(", ")
+        : "";
+    return {
+        title: entity.name || entity.title || null,
+        artist: artists || entity.subtitle || null,
+    };
+}
+
+/**
+ * Gets type/title/artist for a Spotify link, trying several keyless sources:
+ *   1. Embed player page (__NEXT_DATA__ JSON) — most reliable from servers
+ *   2. Regular page Open Graph tags
+ *   3. oEmbed (title only; artist comes from the iTunes match)
+ *
  * @param {string} spotifyUrl - Spotify URL (short links are followed)
- * @returns {Promise<{ type: string|null, title: string|null, artist: string|null }>}
+ * @returns {Promise<{ type: string, title: string|null, artist: string|null }>}
  */
 async function getSpotifyMetadata(spotifyUrl) {
-    const res = await fetchOk(spotifyUrl);
-    return parseSpotifyPage(await res.text(), res.url || spotifyUrl);
+    const { type, id } = await resolveSpotifyId(spotifyUrl);
+    const pageUrl = `https://open.spotify.com/${type}/${id}`;
+    if (type === "playlist") return { type, title: null, artist: null };
+
+    const attempts = [
+        ["embed", async () => parseSpotifyEmbed(await (await fetchOk(`https://open.spotify.com/embed/${type}/${id}`)).text())],
+        ["page", async () => parseSpotifyPage(await (await fetchOk(pageUrl)).text(), pageUrl)],
+        ["oembed", async () => {
+            const data = await (await fetchOk(`https://open.spotify.com/oembed?url=${encodeURIComponent(pageUrl)}`)).json();
+            return { title: data.title || null, artist: null };
+        }],
+    ];
+
+    let best = { title: null, artist: null };
+    for (const [source, attempt] of attempts) {
+        try {
+            const { title, artist } = await attempt();
+            logger.info(`Spotify ${source}: title=${title}, artist=${artist}`);
+            if (title && (artist || type === "artist")) {
+                return { type, title, artist: type === "artist" ? title : artist };
+            }
+            if (title && !best.title) best = { title, artist: null };
+        } catch (err) {
+            logger.warn(`Spotify ${source} failed:`, err.message);
+        }
+    }
+
+    // Title only (e.g. oEmbed): iTunes will be searched by title alone
+    return { type, ...best };
 }
 
 /**
  * Searches the iTunes API and returns the Apple Music URL
  * @param {string} type - track | album | artist
  * @param {string} title - Track/album/artist name
- * @param {string|null} artist - Artist name (null for artist lookups)
+ * @param {string|null} artist - Artist name (null for artist lookups or when unknown)
  * @returns {Promise<{ url: string, title: string, artist: string }|null>}
  */
 async function searchItunes(type, title, artist) {
     const { entity, urlField, nameField } = ITUNES_ENTITIES[type];
-    const term = type === "artist" ? title : `${artist} ${title}`;
+    // First artist only: "A, B" lists match iTunes' catalog less reliably
+    const mainArtist = artist ? artist.split(",")[0].trim() : null;
+    const term = type === "artist" || !mainArtist ? title : `${mainArtist} ${title}`;
     const url =
         `https://itunes.apple.com/search?term=${encodeURIComponent(term)}` +
         `&media=music&entity=${entity}&limit=1&country=${ITUNES_COUNTRY}`;
@@ -198,7 +280,7 @@ async function handleSpotifyToAppleMusic(sock, msg, chatId, spotifyUrl) {
             return true;
         }
 
-        if (!type || !title || (type !== "artist" && !artist)) {
+        if (!title) {
             throw new Error("couldn't read the song info from Spotify");
         }
 
@@ -237,4 +319,5 @@ module.exports = {
     handleSpotifyToAppleMusic,
     // exported for testing
     parseSpotifyPage,
+    parseSpotifyEmbed,
 };
