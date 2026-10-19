@@ -2,26 +2,42 @@
  * Spotify → Apple Music link converter
  * Auto-detects Spotify URLs in messages and replies with the Apple Music equivalent.
  *
- * Strategy:
- *   1. Try Odesli (song.link) API first — returns cross-platform links
- *   2. If Odesli doesn't have Apple Music (common for BR region),
- *      fall back to iTunes Search API using the song metadata from Odesli
+ * Strategy (no API keys needed):
+ *   1. Read the title/artist from the Spotify page's Open Graph tags
+ *      (the same metadata WhatsApp uses for link previews)
+ *   2. Look it up with the iTunes Search API
+ *
+ * Odesli (song.link) used to do this, but its keyless public API was
+ * retired on 2026-07-31 and now answers 401 PUBLIC_API_ACCESS_DEPRECATED.
  *
  * @module commands/music
  */
 
-const https = require("https");
 const { createReactHelper, sendWithBotReaction, logger } = require("../utils");
 
-/** @type {RegExp} Matches Spotify URLs (tracks, albums, playlists, and short links) */
+/** @type {RegExp} Matches Spotify URLs (tracks, albums, playlists, artists, and short links) */
 const SPOTIFY_PATTERN =
-    /https?:\/\/(?:open\.spotify\.com\/(?:track|album|playlist|artist)\/[a-zA-Z0-9]+(?:\?[^\s]*)?|spotify\.link\/[a-zA-Z0-9]+)/i;
-
-/** @type {string} Odesli API endpoint */
-const ODESLI_API = "https://api.odesli.co/v1-alpha.1/links";
+    /https?:\/\/(?:open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?(?:track|album|playlist|artist)\/[a-zA-Z0-9]+(?:\?[^\s]*)?|spotify\.link\/[a-zA-Z0-9]+)/i;
 
 /** @type {number} API request timeout in ms */
 const API_TIMEOUT = 15000;
+
+/** @type {string} iTunes storefront to search (BR catalog) */
+const ITUNES_COUNTRY = "BR";
+
+/** Browser-like UA: Spotify serves the full server-rendered page (with meta tags) to browsers */
+const USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+/**
+ * iTunes entity to search for each Spotify type, and the result field holding the link
+ * @type {Record<string, { entity: string, urlField: string, nameField: string }>}
+ */
+const ITUNES_ENTITIES = {
+    track: { entity: "song", urlField: "trackViewUrl", nameField: "trackName" },
+    album: { entity: "album", urlField: "collectionViewUrl", nameField: "collectionName" },
+    artist: { entity: "musicArtist", urlField: "artistLinkUrl", nameField: "artistName" },
+};
 
 /**
  * Checks if a message contains a Spotify link
@@ -35,96 +51,127 @@ function matchSpotifyLink(text) {
 }
 
 /**
- * Generic HTTPS GET that returns parsed JSON
+ * Fetches a URL with a timeout, throwing on non-2xx responses
  * @param {string} url - Full URL to fetch
- * @returns {Promise<object>} Parsed JSON response
+ * @returns {Promise<Response>}
  */
-function fetchJson(url) {
-    return new Promise((resolve, reject) => {
-        const req = https.get(url, { timeout: API_TIMEOUT }, (res) => {
-            let data = "";
-
-            res.on("data", (chunk) => {
-                data += chunk;
-            });
-
-            res.on("end", () => {
-                if (res.statusCode !== 200) {
-                    reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).hostname}`));
-                    return;
-                }
-                try {
-                    resolve(JSON.parse(data));
-                } catch {
-                    reject(new Error("Failed to parse JSON response"));
-                }
-            });
-        });
-
-        req.on("error", reject);
-        req.on("timeout", () => {
-            req.destroy();
-            reject(new Error("Request timed out"));
-        });
+async function fetchOk(url) {
+    const res = await fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Accept-Language": "en" },
+        signal: AbortSignal.timeout(API_TIMEOUT),
+        redirect: "follow",
     });
+    if (!res.ok) {
+        throw new Error(`HTTP ${res.status} from ${new URL(url).hostname}`);
+    }
+    return res;
 }
 
 /**
- * Extracts song metadata (title, artist) from Odesli response
- * Prefers the Spotify entity for the most accurate metadata
- * @param {object} data - Odesli API response
- * @returns {{ title: string, artist: string }}
+ * Decodes the HTML entities that show up in meta tag values
+ * @param {string} str
+ * @returns {string}
  */
-function extractMetadata(data) {
-    const entities = data.entitiesByUniqueId || {};
-
-    // Prefer the Spotify entity — it has the original metadata
-    const spotifyEntity = Object.values(entities).find(
-        (e) => e.apiProvider === "spotify" && e.title
-    );
-    if (spotifyEntity) {
-        return {
-            title: spotifyEntity.title,
-            artist: spotifyEntity.artistName || "Unknown Artist",
-        };
-    }
-
-    // Fallback to any entity with a title
-    for (const entity of Object.values(entities)) {
-        if (entity.title) {
-            return {
-                title: entity.title,
-                artist: entity.artistName || "Unknown Artist",
-            };
-        }
-    }
-
-    return { title: null, artist: null };
+function decodeEntities(str) {
+    return str
+        .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+        .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(Number(dec)))
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&amp;/g, "&");
 }
 
 /**
- * Searches the iTunes API for a song and returns the Apple Music URL
- * @param {string} title - Song title
- * @param {string} artist - Artist name
+ * Reads a <meta property|name="key" content="..."> value from HTML
+ * @param {string} html
+ * @param {string} key
+ * @returns {string|null}
+ */
+function getMeta(html, key) {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Find each <meta> tag, then read its attributes (handles either attribute order and quote style)
+    const keyRe = new RegExp(`(?:property|name)\\s*=\\s*(["'])${escaped}\\1`, "i");
+    const tag = (html.match(/<meta\b[^>]*>/gi) || []).find((t) => keyRe.test(t));
+    const m = tag && tag.match(/\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const value = m && (m[1] ?? m[2]);
+    return value ? decodeEntities(value).trim() : null;
+}
+
+/**
+ * Extracts type, title and artist from a Spotify page.
+ *
+ * Spotify pages look like:
+ *   og:title        "Never Gonna Give You Up"
+ *   og:description  "Rick Astley · Song · 1987"   (album: "Artist · Album · 1987 · 12 songs")
+ *   <title>         "Never Gonna Give You Up - song and lyrics by Rick Astley | Spotify"
+ *
+ * @param {string} html - Page HTML
+ * @param {string} finalUrl - URL after redirects (resolves spotify.link short links)
+ * @returns {{ type: string|null, title: string|null, artist: string|null }}
+ */
+function parseSpotifyPage(html, finalUrl) {
+    const typeMatch = finalUrl.match(/open\.spotify\.com\/(?:intl-[a-z-]+\/)?(track|album|playlist|artist)\//i);
+    const urlType = typeMatch ? typeMatch[1].toLowerCase() : null;
+    const ogType = getMeta(html, "og:type") || "";
+    const type =
+        urlType ||
+        (ogType.includes("song") ? "track" : ogType.includes("album") ? "album" : ogType.includes("musician") ? "artist" : null);
+
+    const title = getMeta(html, "og:title");
+    let artist = getMeta(html, "music:musician_description");
+
+    if (!artist && type !== "artist") {
+        // "<title>X - song and lyrics by Artist | Spotify" / "X - Album by Artist | Spotify"
+        const pageTitle = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+        const byMatch = pageTitle && decodeEntities(pageTitle[1]).match(/\bby (.+?) \| Spotify/i);
+        if (byMatch) artist = byMatch[1].trim();
+    }
+
+    if (!artist && type !== "artist") {
+        // og:description starts with the artist: "Artist · Song · 1987"
+        const description = getMeta(html, "og:description");
+        if (description && description.includes(" · ")) artist = description.split(" · ")[0].trim();
+    }
+
+    return { type, title, artist: type === "artist" ? title : artist };
+}
+
+/**
+ * Fetches and parses a Spotify page
+ * @param {string} spotifyUrl - Spotify URL (short links are followed)
+ * @returns {Promise<{ type: string|null, title: string|null, artist: string|null }>}
+ */
+async function getSpotifyMetadata(spotifyUrl) {
+    const res = await fetchOk(spotifyUrl);
+    return parseSpotifyPage(await res.text(), res.url || spotifyUrl);
+}
+
+/**
+ * Searches the iTunes API and returns the Apple Music URL
+ * @param {string} type - track | album | artist
+ * @param {string} title - Track/album/artist name
+ * @param {string|null} artist - Artist name (null for artist lookups)
  * @returns {Promise<{ url: string, title: string, artist: string }|null>}
  */
-async function searchItunes(title, artist) {
-    const query = encodeURIComponent(`${artist} ${title}`);
-    const url = `https://itunes.apple.com/search?term=${query}&media=music&entity=song&limit=1&country=BR`;
+async function searchItunes(type, title, artist) {
+    const { entity, urlField, nameField } = ITUNES_ENTITIES[type];
+    const term = type === "artist" ? title : `${artist} ${title}`;
+    const url =
+        `https://itunes.apple.com/search?term=${encodeURIComponent(term)}` +
+        `&media=music&entity=${entity}&limit=1&country=${ITUNES_COUNTRY}`;
 
-    logger.info("iTunes fallback search:", `${artist} - ${title}`);
-    const data = await fetchJson(url);
+    logger.info(`iTunes search (${entity}):`, term);
+    const data = await (await fetchOk(url)).json();
+    const result = data.results?.[0];
+    if (!result?.[urlField]) return null;
 
-    if (data.results && data.results.length > 0) {
-        const result = data.results[0];
-        return {
-            url: result.trackViewUrl,
-            title: result.trackName,
-            artist: result.artistName,
-        };
-    }
-
-    return null;
+    return {
+        url: result[urlField],
+        title: result[nameField],
+        artist: result.artistName,
+    };
 }
 
 /**
@@ -142,41 +189,38 @@ async function handleSpotifyToAppleMusic(sock, msg, chatId, spotifyUrl) {
         await react("🔍");
         logger.info("Spotify → Apple Music lookup:", spotifyUrl);
 
-        const data = await fetchOdesli(spotifyUrl);
+        const { type, title, artist } = await getSpotifyMetadata(spotifyUrl);
+        logger.info(`Spotify metadata: type=${type}, title=${title}, artist=${artist}`);
 
-        // 1. Try Odesli's Apple Music link first
-        let appleMusicUrl = data.linksByPlatform?.appleMusic?.url;
-        let { title, artist } = extractMetadata(data);
-
-        // 2. Fallback: search iTunes directly using Odesli metadata
-        if (!appleMusicUrl && title && artist) {
-            logger.info("Odesli has no Apple Music link, trying iTunes fallback...");
-            const itunesResult = await searchItunes(title, artist);
-            if (itunesResult) {
-                appleMusicUrl = itunesResult.url;
-                // Use iTunes metadata if we got a match (may be slightly different)
-                title = itunesResult.title;
-                artist = itunesResult.artist;
-            }
+        if (type === "playlist") {
+            // Playlists are user-made and have no Apple Music equivalent
+            await react("🤷");
+            return true;
         }
 
-        if (!appleMusicUrl) {
+        if (!type || !title || (type !== "artist" && !artist)) {
+            throw new Error("couldn't read the song info from Spotify");
+        }
+
+        const found = await searchItunes(type, title, artist);
+
+        if (!found) {
             await react("⚠️");
             await sendWithBotReaction(sock, chatId, {
-                text: "⚠️ This track wasn't found on Apple Music.",
+                text: "⚠️ This wasn't found on Apple Music.",
             });
             return true;
         }
 
         const reply =
-            `🎵 *${title}* — _${artist}_\n` +
-            `\n` +
-            `🍎 ${appleMusicUrl}`;
+            type === "artist"
+                ? `🎤 *${found.artist}*\n\n🍎 ${found.url}`
+                : `🎵 *${found.title}* — _${found.artist}_\n\n🍎 ${found.url}`;
 
         await sendWithBotReaction(sock, chatId, { text: reply });
         await react("🍎");
 
-        logger.info("Apple Music link sent:", appleMusicUrl);
+        logger.info("Apple Music link sent:", found.url);
     } catch (error) {
         logger.error("Spotify → Apple Music error:", error.message);
         await react("❌");
@@ -188,17 +232,9 @@ async function handleSpotifyToAppleMusic(sock, msg, chatId, spotifyUrl) {
     return true;
 }
 
-/**
- * Fetches data from the Odesli API
- * @param {string} spotifyUrl - Spotify URL to look up
- * @returns {Promise<object>} Parsed JSON response
- */
-function fetchOdesli(spotifyUrl) {
-    const url = `${ODESLI_API}?url=${encodeURIComponent(spotifyUrl)}`;
-    return fetchJson(url);
-}
-
 module.exports = {
     matchSpotifyLink,
     handleSpotifyToAppleMusic,
+    // exported for testing
+    parseSpotifyPage,
 };
