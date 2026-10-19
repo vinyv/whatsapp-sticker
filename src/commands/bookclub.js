@@ -1023,10 +1023,17 @@ async function handleBookClubCommand(sock, msg, chatId, match) {
                 `🖼️ /s — Converter imagem/vídeo em sticker\n` +
                 `_(envie como legenda ou responda a uma mídia)_\n\n` +
                 `── Download ──\n` +
-                `📥 /d [url] — Baixar vídeo\n` +
+                `📥 /d [url] — Baixar vídeo (até 720p)\n` +
+                `🎬 /df [url] — Vídeo em resolução máxima (como arquivo)\n` +
                 `🎵 /da [url] — Baixar áudio (MP3)\n` +
                 `🖼️ /ds [url] — Baixar e converter em sticker\n` +
-                `_(sem url = pesquisa no YouTube)_\n\n` +
+                `_(texto em vez de url = pesquisa no YouTube)_\n\n` +
+                `── PC ──\n` +
+                `▶️ /p [busca] — Tocar no YouTube do PC\n` +
+                `🔊 /v [0-100] — Volume do YouTube\n` +
+                `🏓 /ping — Status do bot e do PC\n\n` +
+                `── Automático ──\n` +
+                `🍎 Links do Spotify viram links do Apple Music\n\n` +
                 `── Clube do Livro ──\n` +
                 `📚 /clube — Menu principal (todas as opções)\n` +
                 `📊 /progresso [pág] — Registrar progresso\n` +
