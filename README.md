@@ -5,7 +5,7 @@ A WhatsApp bot that converts images and videos to stickers, downloads media from
 ## Architecture
 
 - **Cloud bot** (`index.js`, Oracle Cloud VM, systemd): WhatsApp connection, stickers, book club, Spotify → Apple Music.
-- **Local worker** (`local-worker/`, your Windows PC, reached via Cloudflare Tunnel): yt-dlp downloads, GPU encoding, Edge playback and volume.
+- **Local worker** (`local-worker/`, your Windows PC, reached via Cloudflare Tunnel): yt-dlp downloads and GPU encoding.
   Downloads run as background jobs that the cloud polls, so long encodes aren't cut off by Cloudflare's 100 s request limit.
 - When the PC is off, `/ds` still works by downloading on the cloud VM; other downloads report that the PC is offline.
 
@@ -87,9 +87,6 @@ local-worker\start.bat
 | `/dd <url>` | Same as `/d`, but keep the file on the PC | |
 | `/da <url>` / `/dda <url>` | Download audio as MP3 (`/dda` keeps the file) | |
 | `/ds <url>` | Download the first seconds of a video as a sticker | |
-| `/df <url>` | Full-resolution (up to 4K) video, sent as a document | |
-| `/p <query>` | Search YouTube and play the pick in Edge on the PC | `/p lofi` |
-| `/v <0-100>` | Set YouTube volume on the PC | `/v 30` |
 | `/ping` | Bot uptime, PC worker status and yt-dlp version | |
 | `/ajuda` | List all commands (incl. book club) | |
 
@@ -152,7 +149,7 @@ node index.js
 ```
 WppBot/
 ├── index.js                 # Cloud bot entry point
-├── local-worker/index.js    # PC worker API (downloads, Edge, volume)
+├── local-worker/index.js    # PC worker API (downloads, encoding)
 ├── deploy/                  # Cloud VM setup script + systemd unit
 ├── src/
 │   ├── config.js            # Configuration with env var support
