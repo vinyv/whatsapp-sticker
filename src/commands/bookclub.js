@@ -1024,14 +1024,9 @@ async function handleBookClubCommand(sock, msg, chatId, match) {
                 `_(envie como legenda ou responda a uma mídia)_\n\n` +
                 `── Download ──\n` +
                 `📥 /d [url] — Baixar vídeo (até 720p)\n` +
-                `🎬 /df [url] — Vídeo em resolução máxima (como arquivo)\n` +
                 `🎵 /da [url] — Baixar áudio (MP3)\n` +
                 `🖼️ /ds [url] — Baixar e converter em sticker\n` +
                 `_(texto em vez de url = pesquisa no YouTube)_\n\n` +
-                `── PC ──\n` +
-                `▶️ /p [busca] — Tocar no YouTube do PC\n` +
-                `🔊 /v [0-100] — Volume do YouTube\n` +
-                `🏓 /ping — Status do bot e do PC\n\n` +
                 `── Automático ──\n` +
                 `🍎 Links do Spotify viram links do Apple Music\n\n` +
                 `── Clube do Livro ──\n` +
@@ -1041,6 +1036,7 @@ async function handleBookClubCommand(sock, msg, chatId, match) {
                 `👤 /nome [nome] — Definir seu nome\n` +
                 `_Use /clube para ver todas as opções do clube._\n\n` +
                 `❌ /cancelar — Cancelar fluxo atual\n` +
+                `🏓 /ping — Status do bot\n` +
                 `❓ /ajuda — Esta mensagem`,
         });
         return true;
