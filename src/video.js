@@ -129,10 +129,12 @@ async function downloadVideo(url, keepFile = false) {
     const id = newJobId("video");
 
     try {
-        // Prefer H.264/AAC so most downloads can skip re-encoding entirely
+        // Highest resolution up to 720p first; H.264/AAC only breaks ties at the same
+        // resolution (so re-encoding can be skipped without giving up sharpness —
+        // YouTube often only offers H.264 at 360p)
         const info = await ytdlp.downloadWithInfo(url, [
             "-f", "bv*[height<=720]+ba/b[height<=720]/b",
-            "-S", "vcodec:h264,res,acodec:m4a",
+            "-S", "res:720,vcodec:h264,acodec:m4a",
             "--merge-output-format", "mp4",
             "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
         ]);
