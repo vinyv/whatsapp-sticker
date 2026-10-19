@@ -1,6 +1,13 @@
 # WhatsApp Sticker Bot
 
-A robust local WhatsApp bot that converts images and videos to stickers and downloads videos from various platforms.
+A WhatsApp bot that converts images and videos to stickers, downloads media from various platforms, and runs a book club.
+
+## Architecture
+
+- **Cloud bot** (`index.js`, Oracle Cloud VM, systemd): WhatsApp connection, stickers, book club, Spotify → Apple Music.
+- **Local worker** (`local-worker/`, your Windows PC, reached via Cloudflare Tunnel): yt-dlp downloads, GPU encoding, Edge playback and volume.
+  Downloads run as background jobs that the cloud polls, so long encodes aren't cut off by Cloudflare's 100 s request limit.
+- When the PC is off, `/ds` still works by downloading on the cloud VM; other downloads report that the PC is offline.
 
 ## Features
 
@@ -28,10 +35,10 @@ A robust local WhatsApp bot that converts images and videos to stickers and down
 
 ## Requirements
 
-- **OS**: Windows (optimized for Windows usage)
-- **Node.js**: v18 or higher
+- **Node.js**: v22 or higher (yt-dlp uses it as its JavaScript runtime for YouTube)
 - **FFmpeg**: Must be in system PATH
-- **yt-dlp**: Download from [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases) and place `yt-dlp.exe` in the project root
+- **yt-dlp**: Standalone binary — `yt-dlp.exe` in the project root on the PC (`deploy/setup.sh` installs it on the cloud VM).
+  It updates itself every 12 h (`YTDLP_UPDATE_CHANNEL` / `YTDLP_UPDATE_INTERVAL_MS`). Installing [Deno](https://deno.com) is optional; Node is used otherwise.
 
 ### Optional
 - **NVIDIA GPU**: For hardware-accelerated video encoding (falls back to CPU if unavailable)
@@ -60,24 +67,33 @@ A robust local WhatsApp bot that converts images and videos to stickers and down
 
 ### 1. Start the Bot
 
-**Normal Mode:**
+**Cloud bot** (first time: `sudo bash deploy/setup.sh`):
 ```bash
-node index.js
+sudo systemctl start wppbot
+sudo journalctl -u wppbot -f   # scan the QR code shown here
 ```
 
-**With System Tray:**
+**Local worker** (on the PC, after `npm install` in both the root and `local-worker/`):
 ```bash
-node index.js --tray
+local-worker\start.bat
 ```
-
-Scan the QR code with WhatsApp to log in.
 
 ### 2. Commands
 
 | Command | Description | Example |
 | :--- | :--- | :--- |
 | `/s` | Convert image/video to sticker (Caption or Reply) | Send image with caption `/s` |
-| `/d <url>` | Download and send video (Temporary) | `/d https://youtu.be/...` |
+| `/d <url>` | Download and send video (≤720p) | `/d https://youtu.be/...` |
+| `/dd <url>` | Same as `/d`, but keep the file on the PC | |
+| `/da <url>` / `/dda <url>` | Download audio as MP3 (`/dda` keeps the file) | |
+| `/ds <url>` | Download the first seconds of a video as a sticker | |
+| `/df <url>` | Full-resolution (up to 4K) video, sent as a document | |
+| `/p <query>` | Search YouTube and play the pick in Edge on the PC | `/p lofi` |
+| `/v <0-100>` | Set YouTube volume on the PC | `/v 30` |
+| `/ping` | Bot uptime, PC worker status and yt-dlp version | |
+| `/ajuda` | List all commands (incl. book club) | |
+
+Any `/d*` command with text instead of a URL searches YouTube and lets you pick a result. Spotify links are answered automatically with the Apple Music link.
 
 ### 3. Background Running (Windows)
 
@@ -94,9 +110,9 @@ Configuration can be customized via **environment variables** or by editing `src
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STICKER_PACK` | "feito por viny." | Sticker pack name shown in WhatsApp |
-| `STICKER_AUTHOR` | "viny" | Sticker author name |
-| `QUALITY_START` | 50 | Initial sticker compression quality (1-100) |
+| `STICKER_PACK` | "automatizado por" | Sticker pack name shown in WhatsApp |
+| `STICKER_AUTHOR` | "vinycius.me" | Sticker author name |
+| `QUALITY_START` | 30 | Initial sticker compression quality (1-100) |
 | `QUALITY_MIN` | 10 | Minimum sticker quality before giving up |
 | `DOWNLOAD_TIMEOUT` | 300000 | Download timeout in milliseconds (5 min) |
 | `ENCODE_TIMEOUT` | 300000 | Video encoding timeout in milliseconds |
@@ -104,7 +120,11 @@ Configuration can be customized via **environment variables** or by editing `src
 | `MAX_CONCURRENT_DOWNLOADS` | 3 | Maximum simultaneous downloads |
 | `DOWNLOADS_DIR` | ./downloads | Directory for downloaded files |
 | `YTDLP_PATH` | ./yt-dlp.exe | Path to yt-dlp executable |
-| `COOKIES_PATH` | ./cookies.txt | Path to cookies file |
+| `COOKIES_PATH` | ./cookies.txt | Cookies file (passed to yt-dlp whenever it exists) |
+| `YTDLP_UPDATE_CHANNEL` | nightly | yt-dlp self-update channel (`stable`, `nightly`, `master`) |
+| `YTDLP_UPDATE_INTERVAL_MS` | 43200000 | How often yt-dlp self-updates (0 = never) |
+| `LOCAL_WORKER_URL` | | Cloud: URL of the local worker (Cloudflare Tunnel) |
+| `LOCAL_WORKER_SECRET` / `WORKER_SECRET` | | Shared secret between cloud and worker — always set it |
 | `AUTH_DIR` | ./.wwebjs_auth | WhatsApp auth state directory |
 
 ### Example
@@ -113,7 +133,7 @@ Configuration can be customized via **environment variables** or by editing `src
 # Custom sticker metadata
 set STICKER_PACK="My Sticker Pack"
 set STICKER_AUTHOR="MyName"
-node index.js --tray
+node index.js
 ```
 
 
@@ -121,7 +141,8 @@ node index.js --tray
 
 | Issue | Solution |
 |-------|----------|
-| "File not supported" | Large videos (>64MB) are re-encoded. Very large files may still fail. |
+| "File not supported" | Videos are re-encoded to H.264/AAC when needed; anything still over 64 MB is sent as a document. |
+| YouTube "Sign in to confirm" / missing formats | Refresh `cookies.txt`; check `/ping` shows a recent yt-dlp version |
 | TikTok/Instagram errors | Ensure `cookies.txt` is up to date in the root directory |
 | No GPU acceleration | Install NVIDIA drivers; bot will auto-fallback to CPU encoding |
 | yt-dlp not found | Download from [releases](https://github.com/yt-dlp/yt-dlp/releases) and place in root |
@@ -130,17 +151,18 @@ node index.js --tray
 
 ```
 WppBot/
-├── index.js           # Main entry point
+├── index.js                 # Cloud bot entry point
+├── local-worker/index.js    # PC worker API (downloads, Edge, volume)
+├── deploy/                  # Cloud VM setup script + systemd unit
 ├── src/
-│   ├── config.js      # Configuration with env var support
-│   ├── utils.js       # Utilities (logger, Semaphore, helpers)
-│   ├── video.js       # Video download & encoding
-│   ├── sticker.js     # Sticker creation
-│   ├── tray.js        # System tray functionality
-│   └── commands/      # Command handlers
-│       ├── download.js
-│       └── sticker.js
-├── downloads/         # Temporary video storage
+│   ├── config.js            # Configuration with env var support
+│   ├── utils.js             # Utilities (logger, Semaphore, helpers)
+│   ├── ytdlp.js             # yt-dlp wrapper + self-update
+│   ├── video.js             # Video download & encoding
+│   ├── sticker.js           # Sticker creation
+│   ├── local-worker-client.js  # Cloud → worker HTTP client
+│   └── commands/            # Command handlers (download, search, sticker, bookclub, ...)
+├── downloads/               # Temporary video storage
 ├── cookies.txt        # Cookies for TikTok/Instagram
 └── yt-dlp.exe         # Video downloader (not included, download separately)
 ```

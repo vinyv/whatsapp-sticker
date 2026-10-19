@@ -10,18 +10,27 @@ echo "=== WppBot Cloud Setup ==="
 echo "[1/6] Updating system packages..."
 apt-get update && apt-get upgrade -y
 
-# 2. Install Node.js 20 LTS (ARM)
-echo "[2/6] Installing Node.js 20 LTS..."
-if ! command -v node &> /dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+# 2. Install Node.js 22 LTS (ARM). Node 20 is EOL, and yt-dlp's Node JS runtime needs >= 22.
+echo "[2/6] Installing Node.js 22 LTS..."
+NODE_MAJOR=$(node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/')
+if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 22 ]; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 else
     echo "Node.js already installed: $(node -v)"
 fi
 
-# 3. Install FFmpeg (includes libwebp for video stickers)
-echo "[3/6] Installing FFmpeg..."
+# 3. Install FFmpeg (includes libwebp for video stickers) and yt-dlp (cloud /ds fallback)
+echo "[3/6] Installing FFmpeg and yt-dlp..."
 apt-get install -y ffmpeg
+case "$(uname -m)" in
+    aarch64|arm64) YTDLP_ASSET="yt-dlp_linux_aarch64" ;;
+    *)             YTDLP_ASSET="yt-dlp_linux" ;;
+esac
+# Standalone binary (not apt/pip) so the bot can self-update it with --update-to
+curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/$YTDLP_ASSET" -o /usr/local/bin/yt-dlp
+chmod a+rx /usr/local/bin/yt-dlp
+echo "yt-dlp $(/usr/local/bin/yt-dlp --version)"
 
 # 4. Clone repo and install dependencies
 echo "[4/6] Setting up WppBot..."

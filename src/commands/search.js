@@ -5,14 +5,22 @@
  */
 
 const { createReactHelper, sendWithBotReaction, logger } = require("../utils");
-const {
-    isWorkerOnline,
-    workerSearch,
-    workerDownload,
-    workerFullRes,
-    workerAudio,
-    workerPlay,
-} = require("../local-worker-client");
+const { isWorkerOnline, workerSearch, workerPlay } = require("../local-worker-client");
+const { downloadSemaphore, describeCommand, fetchAndSend } = require("./media");
+
+/**
+ * Formats seconds as m:ss or h:mm:ss
+ * @param {number|null} seconds
+ * @returns {string}
+ */
+function formatDuration(seconds) {
+    if (!seconds && seconds !== 0) return "";
+    const s = Math.round(seconds);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
 
 /** @type {number} How long pending searches stay valid (60 seconds) */
 const SEARCH_EXPIRY_MS = 60000;
@@ -103,7 +111,12 @@ async function handleSearchCommand(sock, msg, chatId, query, command) {
         });
 
         // Build numbered list
-        const list = results.map((r, i) => `*${i + 1}.* ${r.title}`).join("\n");
+        const list = results
+            .map((r, i) => {
+                const details = [formatDuration(r.duration), r.channel].filter(Boolean).join(" · ");
+                return `*${i + 1}.* ${r.title}${details ? `\n     _${details}_` : ""}`;
+            })
+            .join("\n");
         const action = command === "p" ? "play" : "download";
         const message = `🔎 *YouTube Search Results:*\n\n${list}\n\n_Reply with a number (1-${results.length}) to ${action}_`;
 
@@ -130,12 +143,19 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
     const selected = search.results[number - 1];
     const command = search.command;
     const isPlay = command === "p";
-    const isAudio = command === "da" || command === "dda";
-    const isDocFile = command === "df";
-    const keepFile = command === "dd" || command === "dda";
+    const { label } = describeCommand(command);
 
     // Clear the pending search
     pendingSearches.delete(chatId);
+
+    // Downloads from search picks count against the same concurrency limit
+    if (!isPlay && !downloadSemaphore.tryAcquire()) {
+        await react("🔄");
+        await sendWithBotReaction(sock, chatId, {
+            text: `🔄 Server busy (${downloadSemaphore.active} downloads in progress). Try again shortly.`,
+        });
+        return;
+    }
 
     try {
         logger.info(`Search selection: #${number} "${selected.title}" (${selected.url})`);
@@ -149,47 +169,18 @@ async function handleSearchReply(sock, msg, chatId, number, search) {
             await sendWithBotReaction(sock, chatId, {
                 text: `▶️ *Now playing:* ${selected.title}`,
             });
-        } else if (isAudio) {
-            const audioBuffer = await workerAudio(selected.url, keepFile);
-            logger.info("Audio downloaded, size:", audioBuffer.length, "bytes");
-
-            await sendWithBotReaction(sock, chatId, {
-                audio: audioBuffer,
-                mimetype: "audio/mpeg",
-                ptt: false,
-            });
-        } else if (isDocFile) {
-            const { buffer: videoBuffer, title, fileName } = await workerFullRes(selected.url);
-            logger.info("Full-res video downloaded, size:", videoBuffer.length, "bytes");
-
-            await sendWithBotReaction(sock, chatId, {
-                document: videoBuffer,
-                mimetype: "video/mp4",
-                fileName: fileName,
-                caption: title || undefined,
-            });
         } else {
-            const { buffer: videoBuffer, title } = await workerDownload(selected.url, keepFile);
-            logger.info("Video downloaded, size:", videoBuffer.length, "bytes");
-
-            const sendPayload = {
-                video: videoBuffer,
-                mimetype: "video/mp4",
-            };
-            if (title) {
-                sendPayload.caption = title;
-            }
-
-            await sendWithBotReaction(sock, chatId, sendPayload);
+            await fetchAndSend(sock, chatId, command, selected.url);
         }
 
         await react("✅");
         logger.info("Search selection handled successfully!");
     } catch (error) {
-        const typeLabel = isPlay ? "play" : (isDocFile ? "full-res video" : (isAudio ? "audio" : "video"));
-        logger.error(`Error handling ${typeLabel} from search:`, error.message);
+        logger.error(`Error handling ${isPlay ? "play" : label} from search:`, error.message);
         await react("❌");
         await sendWithBotReaction(sock, chatId, { text: `❌ ${error.message}` });
+    } finally {
+        if (!isPlay) downloadSemaphore.release();
     }
 }
 

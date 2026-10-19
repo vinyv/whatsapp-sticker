@@ -13,6 +13,7 @@ const {
 } = require("./bookclub");
 const { matchVolumeCommand, handleVolumeCommand } = require("./volume");
 const { matchSpotifyLink, handleSpotifyToAppleMusic } = require("./music");
+const { matchPingCommand, handlePingCommand } = require("./ping");
 
 module.exports = {
     // Download
@@ -40,4 +41,8 @@ module.exports = {
     // Music (Spotify → Apple Music)
     matchSpotifyLink,
     handleSpotifyToAppleMusic,
+
+    // Status
+    matchPingCommand,
+    handlePingCommand,
 };

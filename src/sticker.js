@@ -5,7 +5,8 @@
 
 const fsPromises = require("fs").promises;
 const path = require("path");
-const { Sticker, StickerTypes } = require("wa-sticker-formatter");
+const { randomUUID } = require("crypto");
+const sharp = require("sharp");
 const { Image } = require("node-webpmux");
 const {
     STICKER_PACK,
@@ -82,7 +83,7 @@ async function getVideoMetadata(filePath) {
 
 /**
  * Builds the EXIF metadata buffer for a WhatsApp sticker.
- * This is the same format that wa-sticker-formatter uses internally.
+ * Standard WhatsApp sticker EXIF (TIFF header + JSON payload).
  *
  * @param {string} pack - Sticker pack name
  * @param {string} author - Sticker author name
@@ -126,9 +127,8 @@ async function injectStickerMetadata(webpBuffer, pack, author) {
 
 /**
  * Converts a video buffer directly to an animated WebP sticker using FFmpeg's
- * libwebp codec. This bypasses wa-sticker-formatter's broken video→GIF→WebP
- * pipeline which causes severe color banding artifacts (GIF is limited to
- * 256 colors).
+ * libwebp codec. Avoids a video→GIF→WebP pipeline, which causes severe
+ * color banding artifacts (GIF is limited to 256 colors).
  *
  * The function handles all sticker requirements:
  * - Scales to fit within 512×512 (preserving aspect ratio)
@@ -142,7 +142,7 @@ async function injectStickerMetadata(webpBuffer, pack, author) {
  * @returns {Promise<Buffer>} Animated WebP sticker buffer with metadata
  */
 async function createVideoSticker(buffer) {
-    const timestamp = Date.now();
+    const timestamp = `${Date.now()}_${randomUUID().slice(0, 8)}`;
     const inputPath = path.join(DOWNLOADS_DIR, `sticker_input_${timestamp}.mp4`);
     const preprocessedPath = path.join(DOWNLOADS_DIR, `sticker_pre_${timestamp}.mp4`);
 
@@ -269,43 +269,29 @@ async function createVideoSticker(buffer) {
 }
 
 /**
- * Creates a sticker from an image or video buffer
+ * Converts an image buffer to a static WebP sticker: fits it inside 512x512
+ * on a transparent canvas, lowering quality until it fits the size limit.
  *
- * For images: uses wa-sticker-formatter (Sharp-based, works well)
- * For videos: converts directly to animated WebP via FFmpeg's libwebp codec,
- *   bypassing wa-sticker-formatter's broken video→GIF→WebP pipeline that
- *   causes severe artifacts due to GIF's 256-color limitation.
- *
- * @param {Buffer} buffer - Image or video buffer
- * @param {boolean} [isVideo=false] - Whether the input is a video
- * @returns {Promise<Buffer>} Sticker buffer ready to send
+ * @param {Buffer} buffer - Input image buffer
+ * @returns {Promise<Buffer>} WebP sticker buffer with metadata
  */
-async function createSticker(buffer, isVideo = false) {
-    // Validate input buffer
-    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
-        throw new Error("Invalid buffer provided for sticker creation");
-    }
+async function createImageSticker(buffer) {
+    // Resize once; only the WebP encode is repeated per quality step
+    const resized = await sharp(buffer)
+        .rotate() // honor EXIF orientation from phone cameras
+        .resize(STICKER_MAX_DIMENSION, STICKER_MAX_DIMENSION, {
+            fit: "contain",
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+        })
+        .png()
+        .toBuffer();
 
-    // Video stickers: direct FFmpeg libwebp conversion (bypasses GIF bottleneck)
-    if (isVideo) {
-        logger.info(`Input video size: ${(buffer.length / 1024).toFixed(1)}KB`);
-        return await createVideoSticker(buffer);
-    }
-
-    // Image stickers: use wa-sticker-formatter (Sharp handles these fine)
     let quality = QUALITY_START;
     let stickerBuffer;
 
     while (quality >= QUALITY_MIN) {
-        const sticker = new Sticker(buffer, {
-            pack: STICKER_PACK,
-            author: STICKER_AUTHOR,
-            type: StickerTypes.FULL,
-            quality: quality,
-        });
-
-        await sticker.build();
-        stickerBuffer = await sticker.get();
+        const webp = await sharp(resized).webp({ quality }).toBuffer();
+        stickerBuffer = await injectStickerMetadata(webp, STICKER_PACK, STICKER_AUTHOR);
 
         logger.info(`Sticker quality ${quality}: ${stickerBuffer.length} bytes`);
 
@@ -315,7 +301,6 @@ async function createSticker(buffer, isVideo = false) {
 
         quality -= QUALITY_STEP;
 
-        // Warn when reaching minimum quality
         if (quality < QUALITY_MIN) {
             logger.warn(`Sticker still exceeds ${MAX_STICKER_SIZE_IMAGE} bytes at minimum quality`);
         }
@@ -323,6 +308,30 @@ async function createSticker(buffer, isVideo = false) {
 
     // Return best effort even if still over size limit
     return stickerBuffer;
+}
+
+/**
+ * Creates a sticker from an image or video buffer
+ *
+ * For images: Sharp resize + WebP encode
+ * For videos: converts directly to animated WebP via FFmpeg's libwebp codec
+ *   (a video→GIF→WebP pipeline causes severe banding from GIF's 256 colors).
+ *
+ * @param {Buffer} buffer - Image or video buffer
+ * @param {boolean} [isVideo=false] - Whether the input is a video
+ * @returns {Promise<Buffer>} Sticker buffer ready to send
+ */
+async function createSticker(buffer, isVideo = false) {
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        throw new Error("Invalid buffer provided for sticker creation");
+    }
+
+    if (isVideo) {
+        logger.info(`Input video size: ${(buffer.length / 1024).toFixed(1)}KB`);
+        return await createVideoSticker(buffer);
+    }
+
+    return await createImageSticker(buffer);
 }
 
 module.exports = {
