@@ -116,7 +116,7 @@ async function sendWithBotReaction(sock, chatId, content) {
 }
 
 // ============================================================
-// URL & COOKIE HELPERS
+// URL HELPERS
 // ============================================================
 
 /**
@@ -131,15 +131,6 @@ function isValidUrl(string) {
     } catch {
         return false;
     }
-}
-
-/**
- * Checks if a URL requires cookies for yt-dlp
- * @param {string} url - URL to check
- * @returns {boolean} True if cookies are needed
- */
-function needsCookies(url) {
-    return /tiktok\.com|x\.com|youtube\.com|youtu\.be|^ytsearch/i.test(url);
 }
 
 // ============================================================
@@ -266,7 +257,6 @@ module.exports = {
     createReactHelper,
     sendWithBotReaction,
     isValidUrl,
-    needsCookies,
     safeUnlink,
     scheduleCleanup,
     schedulePatternCleanup,

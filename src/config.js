@@ -107,6 +107,12 @@ const DOWNLOADS_DIR = env("DOWNLOADS_DIR", path.join(ROOT_DIR, "downloads"));
 /** @type {string} Path to yt-dlp executable */
 const YTDLP_PATH = env("YTDLP_PATH", process.platform === "win32" ? path.join(ROOT_DIR, "yt-dlp.exe") : "yt-dlp");
 
+/** @type {string} yt-dlp update channel: "stable", "nightly", "master" or a version tag */
+const YTDLP_UPDATE_CHANNEL = env("YTDLP_UPDATE_CHANNEL", "nightly");
+
+/** @type {number} How often yt-dlp self-updates in ms (default 12h, 0 = never) */
+const YTDLP_UPDATE_INTERVAL_MS = env("YTDLP_UPDATE_INTERVAL_MS", 12 * 60 * 60 * 1000);
+
 /** @type {string} Path to cookies file for yt-dlp */
 const COOKIES_PATH = env("COOKIES_PATH", path.join(ROOT_DIR, "cookies.txt"));
 
@@ -180,6 +186,8 @@ module.exports = {
   ROOT_DIR,
   DOWNLOADS_DIR,
   YTDLP_PATH,
+  YTDLP_UPDATE_CHANNEL,
+  YTDLP_UPDATE_INTERVAL_MS,
   COOKIES_PATH,
   AUTH_DIR,
   ICON_PATH,

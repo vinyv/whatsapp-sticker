@@ -3,30 +3,28 @@
  * @module video
  */
 
-const fs = require("fs");
 const fsPromises = require("fs").promises;
 const path = require("path");
+const { randomUUID } = require("crypto");
 const {
     DOWNLOADS_DIR,
-    YTDLP_PATH,
-    COOKIES_PATH,
     MAX_VIDEO_SIZE,
     CQ_START,
     CQ_MAX,
     CQ_STEP,
-    DOWNLOAD_TIMEOUT,
     ENCODE_TIMEOUT,
     PROBE_TIMEOUT,
+    STICKER_MAX_DURATION,
 } = require("./config");
 const {
     execFileAsync,
-    needsCookies,
     safeUnlink,
     scheduleCleanup,
     schedulePatternCleanup,
     hasNvencSupport,
     logger,
 } = require("./utils");
+const ytdlp = require("./ytdlp");
 
 // Downloads directory is created on first use (async)
 let downloadsReady = false;
@@ -36,12 +34,86 @@ let downloadsReady = false;
  */
 async function ensureDownloadsDir() {
     if (downloadsReady) return;
-    try {
-        await fsPromises.mkdir(DOWNLOADS_DIR, { recursive: true });
-    } catch (err) {
-        if (err.code !== "EEXIST") throw err;
-    }
+    await fsPromises.mkdir(DOWNLOADS_DIR, { recursive: true });
     downloadsReady = true;
+}
+
+/**
+ * Creates a unique file prefix (timestamps alone collide on concurrent jobs)
+ * @param {string} kind - Prefix such as "video" or "audio"
+ * @returns {string}
+ */
+function newJobId(kind) {
+    return `${kind}_${Date.now()}_${randomUUID().slice(0, 8)}`;
+}
+
+/**
+ * Finds the file yt-dlp produced for a job prefix
+ * @param {string} prefix - Job prefix used in the output template
+ * @returns {Promise<string>} Absolute path to the downloaded file
+ */
+async function findDownloaded(prefix) {
+    const files = await fsPromises.readdir(DOWNLOADS_DIR);
+    // Ignore leftovers from interrupted downloads/merges
+    const file = files.find(
+        (f) => f.startsWith(prefix) && !f.endsWith(".part") && !f.includes(".temp.") && !/\.f\d+\./.test(f)
+    );
+    if (!file) {
+        throw new Error("Download failed - file not found");
+    }
+    return path.join(DOWNLOADS_DIR, file);
+}
+
+/**
+ * Immediately deletes all files for a job prefix (e.g. before a retry)
+ * @param {string} prefix - Job prefix
+ */
+async function removeByPrefix(prefix) {
+    const files = await fsPromises.readdir(DOWNLOADS_DIR).catch(() => []);
+    await Promise.all(files.filter((f) => f.startsWith(prefix)).map((f) => safeUnlink(path.join(DOWNLOADS_DIR, f))));
+}
+
+/**
+ * Turns a title into a safe filename
+ * @param {string} title - Media title
+ * @param {string} fallback - Name to use when the title is empty
+ * @param {string} ext - File extension without the dot
+ * @returns {string}
+ */
+function toFileName(title, fallback, ext) {
+    const safe = (title || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "").trim().slice(0, 150);
+    return `${safe || fallback}.${ext}`;
+}
+
+/**
+ * Probes the first video and audio stream of a file
+ * @param {string} filePath - Path to media file
+ * @returns {Promise<{vcodec: string|null, pixFmt: string|null, acodec: string|null}>}
+ */
+async function probeStreams(filePath) {
+    try {
+        const { stdout } = await execFileAsync(
+            "ffprobe",
+            [
+                "-v", "error",
+                "-show_entries", "stream=codec_type,codec_name,pix_fmt",
+                "-of", "json",
+                filePath,
+            ],
+            { timeout: PROBE_TIMEOUT }
+        );
+        const streams = JSON.parse(stdout).streams || [];
+        const video = streams.find((s) => s.codec_type === "video");
+        const audio = streams.find((s) => s.codec_type === "audio");
+        return {
+            vcodec: video?.codec_name?.toLowerCase() || null,
+            pixFmt: video?.pix_fmt || null,
+            acodec: audio?.codec_name?.toLowerCase() || null,
+        };
+    } catch (error) {
+        logger.warn("Could not probe streams:", error.message);
+        return { vcodec: null, pixFmt: null, acodec: null };
+    }
 }
 
 /**
@@ -54,74 +126,26 @@ async function ensureDownloadsDir() {
  */
 async function downloadVideo(url, keepFile = false) {
     await ensureDownloadsDir();
-    const timestamp = Date.now();
-    const outputTemplate = path.join(DOWNLOADS_DIR, `video_${timestamp}.%(ext)s`);
+    const id = newJobId("video");
 
     try {
-        // Fetch the video title first
-        let title = "";
-        try {
-            // Use -j (JSON dump) to avoid Windows codepage mangling non-ASCII titles
-            const titleArgs = ["-j", "--no-playlist", "--no-warnings"];
-            if (needsCookies(url)) {
-                titleArgs.push("--cookies", COOKIES_PATH);
-            }
-            titleArgs.push(url);
-            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
-                timeout: DOWNLOAD_TIMEOUT,
-                encoding: "utf8",
-                env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
-            });
-            const info = JSON.parse(stdout);
-            title = info.title || "";
-            logger.info("Video title:", title);
-        } catch (err) {
-            logger.warn("Could not fetch video title:", err.message);
-        }
+        // Prefer H.264/AAC so most downloads can skip re-encoding entirely
+        const info = await ytdlp.downloadWithInfo(url, [
+            "-f", "bv*[height<=720]+ba/b[height<=720]/b",
+            "-S", "vcodec:h264,res,acodec:m4a",
+            "--merge-output-format", "mp4",
+            "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
+        ]);
+        const title = info.title || "";
+        logger.info("Video title:", title);
 
-        // Build the command arguments
-        const args = [
-            "-f",
-            "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-            "-o",
-            outputTemplate,
-            "--merge-output-format",
-            "mp4",
-            "--no-playlist",
-            "--no-warnings",
-        ];
-
-        // Add cookies for sites that require authentication
-        if (needsCookies(url)) {
-            args.push("--cookies", COOKIES_PATH);
-        }
-
-        args.push(url);
-
-        logger.info("Running yt-dlp with args:", args.join(" "));
-        await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
-
-        // Find the downloaded file
-        const files = await fsPromises.readdir(DOWNLOADS_DIR);
-        const downloadedFile = files.find((f) => f.startsWith(`video_${timestamp}`));
-
-        if (!downloadedFile) {
-            throw new Error("Download failed - file not found");
-        }
-
-        let filePath = path.join(DOWNLOADS_DIR, downloadedFile);
+        let filePath = await findDownloaded(id);
         logger.info("Downloaded file:", filePath);
 
-        // Log video codec for debugging
-        await logVideoCodec(filePath);
+        filePath = await reencodeForWhatsApp(filePath, id);
 
-        // Re-encode for WhatsApp compatibility
-        filePath = await reencodeForWhatsApp(filePath, timestamp);
-
-        // Read the final file asynchronously to avoid blocking
         const buffer = await fsPromises.readFile(filePath);
 
-        // Schedule cleanup if not keeping file
         if (!keepFile) {
             scheduleCleanup(filePath);
         } else {
@@ -130,67 +154,8 @@ async function downloadVideo(url, keepFile = false) {
 
         return { buffer, title };
     } catch (error) {
-        // Clean up any partial downloads
-        schedulePatternCleanup(DOWNLOADS_DIR, `video_${timestamp}`);
+        schedulePatternCleanup(DOWNLOADS_DIR, id);
         throw error;
-    }
-}
-
-/**
- * Logs the video codec of a file for debugging
- * @param {string} filePath - Path to video file
- */
-async function logVideoCodec(filePath) {
-    try {
-        const { stdout } = await execFileAsync(
-            "ffprobe",
-            [
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=codec_name",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                filePath,
-            ],
-            { timeout: PROBE_TIMEOUT }
-        );
-
-        const videoCodec = stdout.trim().toLowerCase();
-        logger.info("Source video codec:", videoCodec);
-    } catch (probeError) {
-        logger.warn("Could not probe video codec:", probeError.message);
-    }
-}
-
-/**
- * Checks if a file has an audio stream
- * @param {string} filePath - Path to media file
- * @returns {Promise<boolean>} True if audio stream exists
- */
-async function hasAudioStream(filePath) {
-    try {
-        const { stdout } = await execFileAsync(
-            "ffprobe",
-            [
-                "-v",
-                "error",
-                "-select_streams",
-                "a",
-                "-show_entries",
-                "stream=codec_type",
-                "-of",
-                "csv=p=0",
-                filePath,
-            ],
-            { timeout: PROBE_TIMEOUT }
-        );
-        return stdout.trim().length > 0;
-    } catch (error) {
-        logger.warn("Could not probe for audio stream:", error.message);
-        return false; // Assume no audio on error to be safe
     }
 }
 
@@ -212,10 +177,9 @@ async function encodeWithQualityLoop(inputPath, outputPath, useNvenc, hasAudio) 
             const qualityLabel = useNvenc ? "CQ" : "CRF";
             logger.info(`Encoding with ${qualityLabel} ${currentQuality}...`);
 
-            const args = buildEncoderArgs(useNvenc, inputPath, outputPath, currentQuality, hasAudio);
+            const args = buildEncoderArgs(useNvenc, inputPath, outputPath, currentQuality, hasAudio, "4.0");
             await execFileAsync("ffmpeg", args, { timeout: ENCODE_TIMEOUT });
 
-            // Check file size asynchronously
             const stats = await fsPromises.stat(outputPath);
             const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
             logger.info(`Encoded file size: ${fileSizeMB} MB`);
@@ -238,15 +202,32 @@ async function encodeWithQualityLoop(inputPath, outputPath, useNvenc, hasAudio) 
 }
 
 /**
- * Re-encodes a video to H.264/AAC for WhatsApp compatibility
- * Uses NVENC if available, falls back to software encoding
+ * Re-encodes a video to H.264/AAC for WhatsApp compatibility.
+ * Skipped when the file is already H.264 8-bit + AAC and under the size limit.
+ * Uses NVENC if available, falls back to software encoding.
  *
  * @param {string} inputPath - Path to input video
- * @param {number} timestamp - Timestamp for output filename
- * @returns {Promise<string>} Path to re-encoded video
+ * @param {string} id - Job prefix for the output filename
+ * @returns {Promise<string>} Path to the final video
  */
-async function reencodeForWhatsApp(inputPath, timestamp) {
-    const reencodedPath = path.join(DOWNLOADS_DIR, `video_${timestamp}_compat.mp4`);
+async function reencodeForWhatsApp(inputPath, id) {
+    const streams = await probeStreams(inputPath);
+    const { size } = await fsPromises.stat(inputPath);
+    const hasAudio = streams.acodec !== null;
+    logger.info(`Source: video=${streams.vcodec} (${streams.pixFmt}), audio=${streams.acodec || "none"}`);
+
+    const compatible =
+        streams.vcodec === "h264" &&
+        streams.pixFmt === "yuv420p" &&
+        (!hasAudio || streams.acodec === "aac") &&
+        size <= MAX_VIDEO_SIZE;
+
+    if (compatible) {
+        logger.info("Already WhatsApp-compatible, skipping re-encode.");
+        return inputPath;
+    }
+
+    const reencodedPath = path.join(DOWNLOADS_DIR, `${id}_compat.mp4`);
 
     // Check for NVENC support (cached after first call)
     const useNvenc = await hasNvencSupport();
@@ -256,13 +237,6 @@ async function reencodeForWhatsApp(inputPath, timestamp) {
             : "Re-encoding using libx264 (CPU)..."
     );
 
-    // Check streams
-    const hasAudio = await hasAudioStream(inputPath);
-    if (!hasAudio) {
-        logger.info("No audio stream detected. Encoding video only.");
-    }
-
-    // Try encoding with detected encoder
     let result = await encodeWithQualityLoop(inputPath, reencodedPath, useNvenc, hasAudio);
 
     // If NVENC failed, try software encoding as fallback
@@ -271,7 +245,6 @@ async function reencodeForWhatsApp(inputPath, timestamp) {
         result = await encodeWithQualityLoop(inputPath, reencodedPath, false, hasAudio);
     }
 
-    // Handle result
     if (result.success) {
         await safeUnlink(inputPath);
         logger.info("Re-encoding complete:", reencodedPath);
@@ -298,38 +271,39 @@ async function reencodeForWhatsApp(inputPath, timestamp) {
  * @param {string} outputPath - Output file path
  * @param {number} quality - Quality value (CQ for NVENC, CRF for libx264)
  * @param {boolean} hasAudio - Whether to include audio args
+ * @param {string|null} [level=null] - H.264 level, or null to let the encoder pick
  * @returns {string[]} FFmpeg arguments
  */
-function buildEncoderArgs(useNvenc, inputPath, outputPath, quality, hasAudio) {
-    const baseArgs = ["-i", inputPath];
-    const audioArgs = hasAudio ? ["-c:a", "aac", "-b:a", "192k"] : [];
+function buildEncoderArgs(useNvenc, inputPath, outputPath, quality, hasAudio, level = null) {
+    const audioArgs = hasAudio ? ["-c:a", "aac", "-b:a", "192k"] : ["-an"];
+    const levelArgs = level ? ["-level", level] : [];
+    // Force 8-bit 4:2:0: 10-bit/HDR sources would otherwise fail with the
+    // "high" profile or produce files WhatsApp can't play
+    const commonArgs = ["-pix_fmt", "yuv420p", "-profile:v", "high", ...levelArgs];
     const outputArgs = ["-movflags", "+faststart", "-y", outputPath];
 
     if (useNvenc) {
         return [
             "-hwaccel", "cuda",
-            ...baseArgs,
+            "-i", inputPath,
             "-c:v", "h264_nvenc",
             "-preset", "p4",
             "-rc", "vbr",
             "-cq", quality.toString(),
-            "-profile:v", "high",
-            "-level", "4.0",
-            ...audioArgs,
-            ...outputArgs,
-        ];
-    } else {
-        return [
-            ...baseArgs,
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", quality.toString(),
-            "-profile:v", "high",
-            "-level", "4.0",
+            ...commonArgs,
             ...audioArgs,
             ...outputArgs,
         ];
     }
+    return [
+        "-i", inputPath,
+        "-c:v", "libx264",
+        "-preset", "medium",
+        "-crf", quality.toString(),
+        ...commonArgs,
+        ...audioArgs,
+        ...outputArgs,
+    ];
 }
 
 /**
@@ -337,65 +311,45 @@ function buildEncoderArgs(useNvenc, inputPath, outputPath, quality, hasAudio) {
  *
  * @param {string} url - Video/audio URL to download
  * @param {boolean} [keepFile=false] - Whether to keep the file after sending
- * @returns {Promise<Buffer>} Audio buffer ready to send
+ * @returns {Promise<{buffer: Buffer, title: string, fileName: string}>} Audio buffer and metadata
  * @throws {Error} If download or conversion fails
  */
 async function downloadAudio(url, keepFile = false) {
     await ensureDownloadsDir();
-    const timestamp = Date.now();
-    const outputPath = path.join(DOWNLOADS_DIR, `audio_${timestamp}.mp3`);
+    const id = newJobId("audio");
 
     try {
-        // Build the command arguments for audio extraction
-        const args = [
+        const info = await ytdlp.downloadWithInfo(url, [
             "-f", "bestaudio/best",
             "-x",                           // Extract audio
             "--audio-format", "mp3",        // Convert to MP3
             "--audio-quality", "0",         // Best quality (VBR ~245kbps)
-            "-o", outputPath,
-            "--no-playlist",
-            "--no-warnings",
-        ];
+            "--embed-metadata",             // Title/artist tags show up in players
+            "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
+        ]);
+        const title = info.title || "";
 
-        // Add cookies for sites that require authentication
-        if (needsCookies(url)) {
-            args.push("--cookies", COOKIES_PATH);
-        }
-
-        args.push(url);
-
-        logger.info("Running yt-dlp for audio with args:", args.join(" "));
-        await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
-
-        // Verify the file was created
-        try {
-            await fsPromises.access(outputPath);
-        } catch {
-            throw new Error("Audio download failed - file not found");
-        }
-
+        const outputPath = await findDownloaded(id);
         logger.info("Downloaded audio:", outputPath);
 
-        // Read the file asynchronously
         const buffer = await fsPromises.readFile(outputPath);
 
-        // Schedule cleanup if not keeping file
         if (!keepFile) {
             scheduleCleanup(outputPath);
         } else {
             logger.info("Keeping file:", outputPath);
         }
 
-        return buffer;
+        return { buffer, title, fileName: toFileName(title, id, "mp3") };
     } catch (error) {
-        // Clean up any partial downloads
-        schedulePatternCleanup(DOWNLOADS_DIR, `audio_${timestamp}`);
+        schedulePatternCleanup(DOWNLOADS_DIR, id);
         throw error;
     }
 }
 
 /**
- * Downloads a video from a URL specifically for sticker creation (optimized for size)
+ * Downloads a video from a URL specifically for sticker creation (optimized for size).
+ * Only the first STICKER_MAX_DURATION seconds are fetched, without audio.
  *
  * @param {string} url - Video URL to download
  * @returns {Promise<Buffer>} Video buffer ready for sticker creation
@@ -403,43 +357,26 @@ async function downloadAudio(url, keepFile = false) {
  */
 async function downloadMediaForSticker(url) {
     await ensureDownloadsDir();
-    const timestamp = Date.now();
-    // Use mp4 as container but we don't strictly care, just want a video file
-    const outputTemplate = path.join(DOWNLOADS_DIR, `sticker_src_${timestamp}.%(ext)s`);
+    const id = newJobId("sticker_src");
+    const args = [
+        // Smallest stream that still covers 512px (stickers are 512x512)
+        "-f", "bv*/b",
+        "-S", "res:720,+size",
+        "--merge-output-format", "mp4",
+        "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
+    ];
 
     try {
-        // Args optimized for stickers:
-        // - Limit height to 512px (WhatsApp sticker limit)
-        // - No audio needed
-        const args = [
-            "-f",
-            "bestvideo[height<=512]+bestaudio/best[height<=512]/best",
-            "-o",
-            outputTemplate,
-            "--merge-output-format",
-            "mp4",
-            "--no-playlist",
-            "--no-warnings",
-        ];
-
-        // Add cookies for sites that require authentication
-        if (needsCookies(url)) {
-            args.push("--cookies", COOKIES_PATH);
+        try {
+            await ytdlp.downloadWithInfo(url, [...args, "--download-sections", `*0-${STICKER_MAX_DURATION}`]);
+        } catch (err) {
+            // Some sites/formats can't be cut; fall back to the whole file
+            logger.warn("Partial download failed, retrying full download:", err.message);
+            await removeByPrefix(id);
+            await ytdlp.downloadWithInfo(url, args);
         }
 
-        args.push(url);
-
-        logger.info("Running yt-dlp for sticker source:", args.join(" "));
-        await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
-
-        const files = await fsPromises.readdir(DOWNLOADS_DIR);
-        const downloadedFile = files.find((f) => f.startsWith(`sticker_src_${timestamp}`));
-
-        if (!downloadedFile) {
-            throw new Error("Download failed - file not found");
-        }
-
-        const filePath = path.join(DOWNLOADS_DIR, downloadedFile);
+        const filePath = await findDownloaded(id);
         logger.info("Downloaded sticker source:", filePath);
 
         const buffer = await fsPromises.readFile(filePath);
@@ -449,7 +386,7 @@ async function downloadMediaForSticker(url) {
 
         return buffer;
     } catch (error) {
-        schedulePatternCleanup(DOWNLOADS_DIR, `sticker_src_${timestamp}`);
+        schedulePatternCleanup(DOWNLOADS_DIR, id);
         throw error;
     }
 }
@@ -466,91 +403,35 @@ async function downloadMediaForSticker(url) {
  */
 async function downloadVideoFullRes(url, keepFile = false) {
     await ensureDownloadsDir();
-    const timestamp = Date.now();
-    const outputTemplate = path.join(DOWNLOADS_DIR, `fullres_${timestamp}.%(ext)s`);
+    const id = newJobId("fullres");
 
     try {
-        // Fetch the video title first
-        let title = "";
-        try {
-            // Use -j (JSON dump) to avoid Windows codepage mangling non-ASCII titles
-            const titleArgs = ["-j", "--no-playlist", "--no-warnings"];
-            if (needsCookies(url)) {
-                titleArgs.push("--cookies", COOKIES_PATH);
-            }
-            titleArgs.push(url);
-            const { stdout } = await execFileAsync(YTDLP_PATH, titleArgs, {
-                timeout: DOWNLOAD_TIMEOUT,
-                encoding: "utf8",
-                env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
-            });
-            const info = JSON.parse(stdout);
-            title = info.title || "";
-            logger.info("Video title (full res):", title);
-        } catch (err) {
-            logger.warn("Could not fetch video title:", err.message);
-        }
-
-        // Build yt-dlp args — same format string as 00__VIDEO.bat
-        const args = [
-            "-f",
-            "bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
-            "-o",
-            outputTemplate,
-            "--merge-output-format",
-            "mp4",
-            "--no-playlist",
-            "--no-warnings",
+        const info = await ytdlp.downloadWithInfo(url, [
+            "-f", "bv*[height<=2160]+ba/b[height<=2160]/b",
+            "--merge-output-format", "mp4",
             "--force-overwrites",
-        ];
+            "--extractor-args", "youtube:player_client=default,web_embedded",
+            "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
+        ]);
+        const title = info.title || "";
+        logger.info("Video title (full res):", title);
 
-        // YouTube client bypass (same as bat file)
-        args.push("--extractor-args", "youtube:player_client=default,web_embedded");
-
-        // Add cookies for sites that require authentication
-        if (needsCookies(url)) {
-            args.push("--cookies", COOKIES_PATH);
-        }
-
-        args.push(url);
-
-        logger.info("Running yt-dlp (full res) with args:", args.join(" "));
-        await execFileAsync(YTDLP_PATH, args, { timeout: DOWNLOAD_TIMEOUT });
-
-        // Find the downloaded file
-        const files = await fsPromises.readdir(DOWNLOADS_DIR);
-        const downloadedFile = files.find((f) => f.startsWith(`fullres_${timestamp}`));
-
-        if (!downloadedFile) {
-            throw new Error("Full-res download failed - file not found");
-        }
-
-        let filePath = path.join(DOWNLOADS_DIR, downloadedFile);
+        let filePath = await findDownloaded(id);
         logger.info("Downloaded full-res file:", filePath);
 
-        // Check codec — only re-encode if NOT already H.264 (same logic as bat file)
-        filePath = await reencodeFullRes(filePath, timestamp);
+        filePath = await reencodeFullRes(filePath, id);
 
-        // Build a clean filename from the title
-        const safeTitle = title
-            ? title.replace(/[<>:"\/\\|?*]/g, "").trim()
-            : `video_${timestamp}`;
-        const fileName = `${safeTitle}.mp4`;
-
-        // Read the final file
         const buffer = await fsPromises.readFile(filePath);
 
-        // Schedule cleanup if not keeping file
         if (!keepFile) {
             scheduleCleanup(filePath);
         } else {
             logger.info("Keeping full-res file:", filePath);
         }
 
-        return { buffer, title, fileName };
+        return { buffer, title, fileName: toFileName(title, id, "mp4") };
     } catch (error) {
-        // Clean up any partial downloads
-        schedulePatternCleanup(DOWNLOADS_DIR, `fullres_${timestamp}`);
+        schedulePatternCleanup(DOWNLOADS_DIR, id);
         throw error;
     }
 }
@@ -561,116 +442,39 @@ async function downloadVideoFullRes(url, keepFile = false) {
  * No file-size cap — the result is sent as a document.
  *
  * @param {string} inputPath - Path to input video
- * @param {number} timestamp - Timestamp for output filename
+ * @param {string} id - Job prefix for the output filename
  * @returns {Promise<string>} Path to the (possibly re-encoded) video
  */
-async function reencodeFullRes(inputPath, timestamp) {
-    // Probe the video codec
-    let codec = "unknown";
-    try {
-        const { stdout } = await execFileAsync(
-            "ffprobe",
-            [
-                "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=codec_name",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                inputPath,
-            ],
-            { timeout: PROBE_TIMEOUT }
-        );
-        codec = stdout.trim().toLowerCase();
-        logger.info("Full-res video codec:", codec);
-    } catch (probeError) {
-        logger.warn("Could not probe full-res codec:", probeError.message);
-    }
+async function reencodeFullRes(inputPath, id) {
+    const streams = await probeStreams(inputPath);
+    logger.info("Full-res video codec:", streams.vcodec);
 
-    // If already H.264 — no re-encode needed
-    if (codec === "h264") {
+    if (streams.vcodec === "h264") {
         logger.info("Full-res video is already H.264, skipping re-encode.");
         return inputPath;
     }
 
-    // Re-encode to H.264 (mirrors bat file ffmpeg settings)
-    const reencodedPath = path.join(DOWNLOADS_DIR, `fullres_${timestamp}_h264.mp4`);
+    const reencodedPath = path.join(DOWNLOADS_DIR, `${id}_h264.mp4`);
+    const hasAudio = streams.acodec !== null;
     const useNvenc = await hasNvencSupport();
+    const encoders = useNvenc ? [true, false] : [false];
 
-    logger.info(
-        useNvenc
-            ? "Full-res re-encoding using NVIDIA NVENC (GPU)..."
-            : "Full-res re-encoding using libx264 (CPU)..."
-    );
-
-    const hasAudio = await hasAudioStream(inputPath);
-    const audioArgs = hasAudio ? ["-c:a", "aac", "-b:a", "192k"] : [];
-
-    let encodeArgs;
-    if (useNvenc) {
-        encodeArgs = [
-            "-hwaccel", "cuda",
-            "-i", inputPath,
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-rc", "vbr",
-            "-cq", "23",
-            "-profile:v", "high",
-            ...audioArgs,
-            "-movflags", "+faststart",
-            "-y", reencodedPath,
-        ];
-    } else {
-        encodeArgs = [
-            "-i", inputPath,
-            "-c:v", "libx264",
-            "-preset", "medium",
-            "-crf", "23",
-            "-profile:v", "high",
-            ...audioArgs,
-            "-movflags", "+faststart",
-            "-y", reencodedPath,
-        ];
-    }
-
-    try {
-        await execFileAsync("ffmpeg", encodeArgs, { timeout: ENCODE_TIMEOUT });
-
-        // Verify output exists
-        await fsPromises.access(reencodedPath);
-        await safeUnlink(inputPath);
-
-        const stats = await fsPromises.stat(reencodedPath);
-        const sizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-        logger.info(`Full-res re-encode complete: ${reencodedPath} (${sizeMB} MB)`);
-
-        return reencodedPath;
-    } catch (err) {
-        logger.error("Full-res re-encode failed:", err.message);
-        // If NVENC failed, try software fallback
-        if (useNvenc) {
-            logger.info("NVENC failed for full-res, falling back to software encoding...");
-            const swArgs = [
-                "-i", inputPath,
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-profile:v", "high",
-                ...audioArgs,
-                "-movflags", "+faststart",
-                "-y", reencodedPath,
-            ];
-            try {
-                await execFileAsync("ffmpeg", swArgs, { timeout: ENCODE_TIMEOUT });
-                await fsPromises.access(reencodedPath);
-                await safeUnlink(inputPath);
-                return reencodedPath;
-            } catch (swErr) {
-                logger.error("Software fallback also failed:", swErr.message);
-            }
+    for (const nvenc of encoders) {
+        logger.info(`Full-res re-encoding using ${nvenc ? "NVIDIA NVENC (GPU)" : "libx264 (CPU)"}...`);
+        try {
+            const args = buildEncoderArgs(nvenc, inputPath, reencodedPath, CQ_START, hasAudio);
+            await execFileAsync("ffmpeg", args, { timeout: ENCODE_TIMEOUT });
+            const stats = await fsPromises.stat(reencodedPath);
+            await safeUnlink(inputPath);
+            logger.info(`Full-res re-encode complete: ${reencodedPath} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
+            return reencodedPath;
+        } catch (err) {
+            logger.error("Full-res re-encode failed:", err.message);
         }
-        // Return original if all encoding attempts fail
-        logger.warn("Using original file (re-encode failed)");
-        return inputPath;
     }
+
+    logger.warn("Using original file (re-encode failed)");
+    return inputPath;
 }
 
 module.exports = {
