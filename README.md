@@ -123,6 +123,17 @@ Configuration can be customized via **environment variables** or by editing `src
 | `LOCAL_WORKER_URL` | | Cloud: URL of the local worker (Cloudflare Tunnel) |
 | `LOCAL_WORKER_SECRET` / `WORKER_SECRET` | | Shared secret between cloud and worker — always set it |
 | `AUTH_DIR` | ./.wwebjs_auth | WhatsApp auth state directory |
+| `NOTIFY_JID` | | Cloud: the only chat that receives PC notifications — a phone number (`5511999999999`, looked up on WhatsApp) or a JID; unset = disabled |
+| `NOTIFY_POLL_MS` | 60000 | Cloud: how often PC notifications are collected from the worker |
+
+### PC Notifications
+
+Scripts on the PC can send a WhatsApp message by queuing it on the worker; the cloud bot collects
+the queue every minute and sends it to `NOTIFY_JID` only. Without `NOTIFY_JID` nothing is sent and messages stay queued:
+
+```bash
+curl -X POST http://localhost:3001/notify -H "X-Worker-Secret: <WORKER_SECRET>" -H "Content-Type: application/json" -d "{\"text\":\"hello\"}"
+```
 
 ### Example
 

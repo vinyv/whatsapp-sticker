@@ -18,6 +18,8 @@
  *   /clube - Book club main menu (runs on cloud)
  *   /cancelar - Cancel active flow
  *
+ * Also delivers messages that scripts on the PC queue on the worker (POST /notify).
+ *
  * @author viny
  */
 
@@ -31,10 +33,11 @@ const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 
 // Local modules
-const { AUTH_DIR } = require("./src/config");
+const { AUTH_DIR, NOTIFY_JID, NOTIFY_POLL_MS } = require("./src/config");
 const { logger } = require("./src/utils");
 const { getSession } = require("./src/session");
 const ytdlp = require("./src/ytdlp");
+const { isWorkerOnline, workerTakeNotifications } = require("./src/local-worker-client");
 const {
   matchDownloadCommand,
   handleDownloadCommand,
@@ -110,6 +113,55 @@ async function getWaVersion() {
 /** @type {number} Consecutive failed connection attempts (drives reconnect backoff) */
 let reconnectAttempts = 0;
 
+/** @type {object|null} Socket of the current open connection (null while reconnecting) */
+let activeSock = null;
+
+/** @type {string|null} NOTIFY_JID resolved to the JID WhatsApp actually uses (cached) */
+let notifyJid = null;
+
+/**
+ * Resolves NOTIFY_JID. A plain phone number is looked up with onWhatsApp, since
+ * Brazilian numbers are often registered without the extra 9 the phone shows.
+ * @param {object} sock - WhatsApp socket connection
+ * @returns {Promise<string|null>} The JID, or null if the number isn't on WhatsApp
+ */
+async function resolveNotifyJid(sock) {
+  if (notifyJid) return notifyJid;
+  if (NOTIFY_JID.includes("@")) return (notifyJid = NOTIFY_JID);
+
+  const [result] = await sock.onWhatsApp(NOTIFY_JID.replace(/\D/g, ""));
+  if (!result?.exists) {
+    logger.error(`NOTIFY_JID ${NOTIFY_JID} is not on WhatsApp — PC notifications not sent`);
+    return null;
+  }
+  logger.info(`PC notifications go to ${result.jid}`);
+  return (notifyJid = result.jid);
+}
+
+/**
+ * Sends the messages that scripts on the local PC queued on the worker.
+ * Runs on a timer; skips quietly while WhatsApp or the PC is offline.
+ * Only ever sends to NOTIFY_JID: with it unset nothing is sent and the queue is left alone.
+ */
+async function deliverPcNotifications() {
+  const sock = activeSock;
+  if (!NOTIFY_JID || !sock || !(await isWorkerOnline())) return;
+
+  const to = await resolveNotifyJid(sock);
+  if (!to) return;
+
+  const notifications = await workerTakeNotifications();
+
+  for (const { text } of notifications) {
+    try {
+      await sock.sendMessage(to, { text });
+      logger.info(`Delivered PC notification to ${to}`);
+    } catch (err) {
+      logger.error("Failed to deliver PC notification:", err);
+    }
+  }
+}
+
 /**
  * Starts the WhatsApp bot and sets up event handlers
  * @returns {Promise<void>}
@@ -150,6 +202,7 @@ async function startBot() {
       );
 
       sock.ev.removeAllListeners();
+      activeSock = null;
 
       if (shouldReconnect) {
         // Exponential backoff (1s → 60s) so a WhatsApp outage doesn't cause a reconnect storm
@@ -171,6 +224,7 @@ async function startBot() {
       }
     } else if (connection === "open") {
       reconnectAttempts = 0;
+      activeSock = sock;
       logger.info("Client is ready!");
     }
   });
@@ -284,6 +338,12 @@ logger.info("Initializing WhatsApp bot (cloud mode)...");
 
 // yt-dlp is only used here for the /ds fallback, but keep it current too
 ytdlp.scheduleAutoUpdate();
+
+// Messages from PC scripts (e.g. daily status checks) arrive through the worker
+if (!NOTIFY_JID) logger.info("NOTIFY_JID not set — PC notifications are disabled");
+setInterval(() => {
+  deliverPcNotifications().catch((err) => logger.warn("PC notification check failed:", err.message));
+}, NOTIFY_POLL_MS);
 
 // Start the bot with proper error handling
 (async () => {
