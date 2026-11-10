@@ -277,23 +277,6 @@ async function workerVolume(volume) {
     await workerRequest("POST", "/volume", { volume }, SHORT_TIMEOUT);
 }
 
-/**
- * Collects messages that scripts on the local PC queued for WhatsApp.
- * The worker clears them once handed over.
- *
- * @returns {Promise<Array<{ text: string, createdAt: number }>>}
- */
-async function workerTakeNotifications() {
-    try {
-        const data = await workerRequest("GET", "/notifications", null, SHORT_TIMEOUT);
-        return data.notifications || [];
-    } catch (error) {
-        // Older workers don't have the endpoint yet
-        if (error.status === 404) return [];
-        throw error;
-    }
-}
-
 module.exports = {
     isWorkerOnline,
     getWorkerInfo,
@@ -304,5 +287,4 @@ module.exports = {
     workerSearch,
     workerPlay,
     workerVolume,
-    workerTakeNotifications,
 };
