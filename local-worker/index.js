@@ -13,6 +13,8 @@
  *   POST /search          → yt-dlp ytsearch5
  *   POST /play            → open Edge + wake monitor
  *   POST /volume          → WebSocket broadcast
+ *   POST /notify          → queue a WhatsApp message from a PC script { text }
+ *   GET  /notifications   → hand queued messages to the cloud bot (and clear them)
  *
  * Downloads run as jobs because Cloudflare cuts proxied requests
  * after 100 seconds, which long downloads/encodes easily exceed.
@@ -238,6 +240,29 @@ app.post("/volume", async (req, res) => {
     });
 
     res.json({ ok: true });
+});
+
+// === Notifications (PC scripts → WhatsApp) ===
+
+/** @type {number} Oldest messages are dropped past this, in case the cloud is down for long */
+const MAX_QUEUED_NOTIFICATIONS = 50;
+
+/** @type {Array<{ text: string, createdAt: number }>} Messages waiting for the cloud bot to collect */
+const notifications = [];
+
+app.post("/notify", (req, res) => {
+    const text = String(req.body?.text || "").trim();
+    if (!text) return res.status(400).json({ error: "text is required" });
+
+    notifications.push({ text: text.slice(0, 4000), createdAt: Date.now() });
+    if (notifications.length > MAX_QUEUED_NOTIFICATIONS) notifications.shift();
+    logger.info(`[Worker] Notification queued (${notifications.length} pending)`);
+
+    res.status(202).json({ queued: notifications.length });
+});
+
+app.get("/notifications", (req, res) => {
+    res.json({ notifications: notifications.splice(0) });
 });
 
 // === Start Server ===

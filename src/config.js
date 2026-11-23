@@ -149,6 +149,12 @@ const LOCAL_WORKER_URL = env("LOCAL_WORKER_URL", "");
 /** @type {string} Shared secret for authenticating worker API requests */
 const LOCAL_WORKER_SECRET = env("LOCAL_WORKER_SECRET", "");
 
+/** @type {string} The only chat that receives PC notifications: a JID or a phone number (empty = disabled) */
+const NOTIFY_JID = env("NOTIFY_JID", "");
+
+/** @type {number} How often the cloud collects PC notifications from the worker in ms (1 minute) */
+const NOTIFY_POLL_MS = env("NOTIFY_POLL_MS", 60000);
+
 module.exports = {
   // Sticker metadata
   STICKER_PACK,
@@ -204,4 +210,6 @@ module.exports = {
   // Local Worker
   LOCAL_WORKER_URL,
   LOCAL_WORKER_SECRET,
+  NOTIFY_JID,
+  NOTIFY_POLL_MS,
 };
