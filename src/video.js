@@ -15,6 +15,7 @@ const {
     ENCODE_TIMEOUT,
     PROBE_TIMEOUT,
     STICKER_MAX_DURATION,
+    AUDIO_STICKER_MAX_DURATION,
 } = require("./config");
 const {
     execFileAsync,
@@ -350,18 +351,22 @@ async function downloadAudio(url, keepFile = false) {
 
 /**
  * Downloads a video from a URL specifically for sticker creation (optimized for size).
- * Only the first STICKER_MAX_DURATION seconds are fetched, without audio.
+ * Only the first seconds are fetched: STICKER_MAX_DURATION without audio, or
+ * AUDIO_STICKER_MAX_DURATION with audio for audio stickers (/dsa).
  *
  * @param {string} url - Video URL to download
+ * @param {object} [options]
+ * @param {boolean} [options.withAudio=false] - Keep the sound (for audio stickers)
  * @returns {Promise<Buffer>} Video buffer ready for sticker creation
  * @throws {Error} If download fails
  */
-async function downloadMediaForSticker(url) {
+async function downloadMediaForSticker(url, { withAudio = false } = {}) {
     await ensureDownloadsDir();
     const id = newJobId("sticker_src");
+    const maxDuration = withAudio ? AUDIO_STICKER_MAX_DURATION : STICKER_MAX_DURATION;
     const args = [
         // Smallest stream that still covers 512px (stickers are 512x512)
-        "-f", "bv*/b",
+        "-f", withAudio ? "bv*+ba/b" : "bv*/b",
         "-S", "res:720,+size",
         "--merge-output-format", "mp4",
         "-o", path.join(DOWNLOADS_DIR, `${id}.%(ext)s`),
@@ -369,7 +374,7 @@ async function downloadMediaForSticker(url) {
 
     try {
         try {
-            await ytdlp.downloadWithInfo(url, [...args, "--download-sections", `*0-${STICKER_MAX_DURATION}`]);
+            await ytdlp.downloadWithInfo(url, [...args, "--download-sections", `*0-${maxDuration}`]);
         } catch (err) {
             // Some sites/formats can't be cut; fall back to the whole file
             logger.warn("Partial download failed, retrying full download:", err.message);

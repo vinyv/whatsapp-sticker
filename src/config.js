@@ -51,6 +51,9 @@ const STICKER_TARGET_FPS = 15;
 /** @type {number} Maximum duration for sticker videos in seconds */
 const STICKER_MAX_DURATION = env("STICKER_MAX_DURATION", 8);
 
+/** @type {number} Maximum length of audio stickers (/sa, /dsa) in seconds, for both the animation and its sound */
+const AUDIO_STICKER_MAX_DURATION = env("AUDIO_STICKER_MAX_DURATION", 10);
+
 /** @type {number} Maximum video file size for WhatsApp in bytes (64MB) */
 const MAX_VIDEO_SIZE = 64 * 1024 * 1024;
 
@@ -116,6 +119,15 @@ const YTDLP_UPDATE_INTERVAL_MS = env("YTDLP_UPDATE_INTERVAL_MS", 12 * 60 * 60 * 
 /** @type {string} Path to cookies file for yt-dlp */
 const COOKIES_PATH = env("COOKIES_PATH", path.join(ROOT_DIR, "cookies.txt"));
 
+/** @type {string} Cookies file used for x.com / twitter.com links (falls back to COOKIES_PATH) */
+const X_COOKIES_PATH = env("X_COOKIES_PATH", path.join(ROOT_DIR, "cookies-x.txt"));
+
+/**
+ * @type {string} Browser to read x.com cookies from live, e.g. "firefox" or "firefox:profile".
+ * Takes priority over X_COOKIES_PATH. Empty = disabled.
+ */
+const X_COOKIES_FROM_BROWSER = env("X_COOKIES_FROM_BROWSER", "");
+
 /** @type {string} Path to authentication state directory */
 const AUTH_DIR = env("AUTH_DIR", path.join(ROOT_DIR, ".wwebjs_auth"));
 
@@ -169,6 +181,7 @@ module.exports = {
   STICKER_MAX_DIMENSION,
   STICKER_TARGET_FPS,
   STICKER_MAX_DURATION,
+  AUDIO_STICKER_MAX_DURATION,
 
   // Quality settings
   QUALITY_START,
@@ -195,6 +208,8 @@ module.exports = {
   YTDLP_UPDATE_CHANNEL,
   YTDLP_UPDATE_INTERVAL_MS,
   COOKIES_PATH,
+  X_COOKIES_PATH,
+  X_COOKIES_FROM_BROWSER,
   AUTH_DIR,
   ICON_PATH,
 

@@ -10,8 +10,8 @@ const { createReactHelper, sendWithBotReaction, isValidUrl, logger } = require("
 const { RATE_LIMIT_MS, MAX_CONCURRENT_DOWNLOADS } = require("../config");
 const { isWorkerOnline } = require("../local-worker-client");
 
-/** @type {RegExp} Matches /d, /dd, /da, /dda, /ds, /df, or /p followed by a URL or query */
-const DOWNLOAD_PATTERN = /^\/(d(?:d|a|da|s|f)?|p)\s+(.+)$/i;
+/** @type {RegExp} Matches /d, /dd, /da, /dda, /ds, /dsa, /df, or /p followed by a URL or query */
+const DOWNLOAD_PATTERN = /^\/(d(?:d|a|da|sa|s|f)?|p)\s+(.+)$/i;
 
 /** @type {Map<string, number>} Tracks last download time per chat for rate limiting */
 const lastDownloadTime = new Map();
@@ -109,7 +109,7 @@ async function handleDownloadCommand(sock, msg, chatId, match) {
 
     if (!online) {
         if (isSticker) {
-            logger.info("Worker offline. Falling back to local cloud execution for /ds");
+            logger.info(`Worker offline. Falling back to local cloud execution for /${command}`);
             useLocalFallback = true;
         } else {
             downloadSemaphore.release();

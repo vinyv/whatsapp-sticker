@@ -6,11 +6,13 @@
  *
  * Commands:
  *   /s - Convert image/video to sticker (runs on cloud)
+ *   /sa - Convert video to an audio sticker that plays its sound (runs on cloud)
  *   /d <url> - Download video and send (via local worker)
  *   /dd <url> - Download video and keep file (via local worker)
  *   /da <url> - Download audio (MP3) and send (via local worker)
  *   /dda <url> - Download audio (MP3) and keep file (via local worker)
  *   /ds <url> - Download video and create sticker (download: local, sticker: cloud)
+ *   /dsa <url> - Same as /ds, but an audio sticker with the video's sound
  *   /df <url> - Download full-res video as document (via local worker)
  *   /p <query> - Search YouTube and play in Edge (via local worker)
  *   /v <0-100> - Set YouTube player volume (via local worker)
@@ -320,12 +322,13 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // 7. Sticker commands (/s)
-  const { isDirectCommand, isReplyCommand } = matchStickerCommand(caption, textMessage);
+  // 7. Sticker commands (/s, /sa)
+  const { isDirectCommand, isReplyCommand, withAudio } = matchStickerCommand(caption, textMessage);
   if (isDirectCommand || isReplyCommand) {
     await handleStickerCommand(sock, msg, chatId, {
       isDirectCommand,
       isReplyCommand,
+      withAudio,
       imageMessage,
       videoMessage,
     });

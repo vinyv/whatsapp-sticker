@@ -4,6 +4,7 @@ node_modules/
 .vscode/
 downloads/
 cookies.txt
+cookies-*.txt
 yt-dlp.exe
 yt-dlp-plugins/
 .env
@@ -14,3 +15,4 @@ stop-background.bat
 view-logs.bat
 local-worker/node_modules/
 local-worker/.env
+local-worker/worker*.log

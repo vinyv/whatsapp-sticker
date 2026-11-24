@@ -86,7 +86,9 @@ local-worker\start.bat
 | `/d <url>` | Download and send video (≤720p) | `/d https://youtu.be/...` |
 | `/dd <url>` | Same as `/d`, but keep the file on the PC | |
 | `/da <url>` / `/dda <url>` | Download audio as MP3 (`/dda` keeps the file) | |
+| `/sa` | Video to audio sticker: plays the video's sound when tapped (Caption or Reply) | Reply to a video with `/sa` |
 | `/ds <url>` | Download the first seconds of a video as a sticker | |
+| `/dsa <url>` | Same as `/ds`, but an audio sticker with the video's sound | |
 | `/ping` | Bot uptime, PC worker status and yt-dlp version | |
 | `/ajuda` | List all commands (incl. book club) | |
 
@@ -117,7 +119,9 @@ Configuration can be customized via **environment variables** or by editing `src
 | `MAX_CONCURRENT_DOWNLOADS` | 3 | Maximum simultaneous downloads |
 | `DOWNLOADS_DIR` | ./downloads | Directory for downloaded files |
 | `YTDLP_PATH` | ./yt-dlp.exe | Path to yt-dlp executable |
-| `COOKIES_PATH` | ./cookies.txt | Cookies file (passed to yt-dlp whenever it exists) |
+| `COOKIES_PATH` | ./cookies.txt | Cookies file (passed to yt-dlp whenever it exists; yt-dlp gets a temp copy, so the file is never rewritten) |
+| `X_COOKIES_PATH` | ./cookies-x.txt | Cookies for x.com / twitter.com links (logged-in export with `auth_token` + `ct0`); falls back to `COOKIES_PATH` |
+| `X_COOKIES_FROM_BROWSER` | | Read x.com cookies live from a browser instead, e.g. `firefox` (overrides `X_COOKIES_PATH`) |
 | `YTDLP_UPDATE_CHANNEL` | nightly | yt-dlp self-update channel (`stable`, `nightly`, `master`) |
 | `YTDLP_UPDATE_INTERVAL_MS` | 43200000 | How often yt-dlp self-updates (0 = never) |
 | `LOCAL_WORKER_URL` | | Cloud: URL of the local worker (Cloudflare Tunnel) |

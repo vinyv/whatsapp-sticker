@@ -1021,11 +1021,13 @@ async function handleBookClubCommand(sock, msg, chatId, match) {
                 `🤖 *Comandos do Bot*\n\n` +
                 `── Sticker ──\n` +
                 `🖼️ /s — Converter imagem/vídeo em sticker\n` +
+                `🔊 /sa — Sticker com o som do vídeo\n` +
                 `_(envie como legenda ou responda a uma mídia)_\n\n` +
                 `── Download ──\n` +
                 `📥 /d [url] — Baixar vídeo (até 720p)\n` +
                 `🎵 /da [url] — Baixar áudio (MP3)\n` +
                 `🖼️ /ds [url] — Baixar e converter em sticker\n` +
+                `🔊 /dsa [url] — Baixar e converter em sticker com som\n` +
                 `_(texto em vez de url = pesquisa no YouTube)_\n\n` +
                 `── Automático ──\n` +
                 `🍎 Links do Spotify viram links do Apple Music\n\n` +

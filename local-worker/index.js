@@ -87,6 +87,7 @@ const runners = {
     fullres: (url, keepFile) => downloadVideoFullRes(url, keepFile),
     audio: (url, keepFile) => downloadAudio(url, keepFile),
     "sticker-src": async (url) => ({ buffer: await downloadMediaForSticker(url) }),
+    "sticker-src-audio": async (url) => ({ buffer: await downloadMediaForSticker(url, { withAudio: true }) }),
 };
 
 // === Jobs ===

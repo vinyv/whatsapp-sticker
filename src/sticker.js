@@ -19,6 +19,7 @@ const {
     STICKER_MAX_DIMENSION,
     STICKER_TARGET_FPS,
     STICKER_MAX_DURATION,
+    AUDIO_STICKER_MAX_DURATION,
     DOWNLOADS_DIR,
     PROBE_TIMEOUT,
     ENCODE_TIMEOUT,
@@ -126,6 +127,67 @@ async function injectStickerMetadata(webpBuffer, pack, author) {
 }
 
 /**
+ * Checks whether a media file has at least one audio stream
+ * @param {string} filePath - Path to media file
+ * @returns {Promise<boolean>}
+ */
+async function hasAudioStream(filePath) {
+    try {
+        const { stdout } = await execFileAsync(
+            "ffprobe",
+            ["-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", filePath],
+            { timeout: PROBE_TIMEOUT }
+        );
+        return stdout.trim().length > 0;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Extracts the first seconds of a file's audio as a mono Ogg/Opus voice clip,
+ * the format WhatsApp plays on audio stickers. The Opus flags matter: without
+ * them the sticker shows up but its sound won't play.
+ *
+ * @param {string} inputPath - Source media file
+ * @param {number} maxDuration - Maximum clip length in seconds
+ * @returns {Promise<{ buffer: Buffer, seconds: number }>}
+ */
+async function extractStickerAudio(inputPath, maxDuration) {
+    const outputPath = inputPath.replace(/\.[^.]+$/, "") + "_audio.ogg";
+    try {
+        await execFileAsync(
+            "ffmpeg",
+            [
+                "-i", inputPath,
+                "-t", maxDuration.toString(),
+                "-vn",
+                "-ac", "1",
+                "-ar", "48000",
+                "-c:a", "libopus",
+                "-b:a", "48k",
+                "-vbr", "on",
+                "-compression_level", "10",
+                "-frame_duration", "20",
+                "-avoid_negative_ts", "make_zero",
+                "-f", "ogg",
+                "-y",
+                outputPath,
+            ],
+            { timeout: ENCODE_TIMEOUT }
+        );
+
+        const buffer = await fsPromises.readFile(outputPath);
+        const { duration } = await getVideoMetadata(outputPath);
+        const seconds = Math.max(1, Math.round(duration));
+        logger.info(`Sticker audio: ${(buffer.length / 1024).toFixed(1)}KB, ${seconds}s`);
+        return { buffer, seconds };
+    } finally {
+        await safeUnlink(outputPath);
+    }
+}
+
+/**
  * Converts a video buffer directly to an animated WebP sticker using FFmpeg's
  * libwebp codec. Avoids a video→GIF→WebP pipeline, which causes severe
  * color banding artifacts (GIF is limited to 256 colors).
@@ -139,9 +201,13 @@ async function injectStickerMetadata(webpBuffer, pack, author) {
  * - Injects EXIF metadata for sticker pack/author info
  *
  * @param {Buffer} buffer - Input video buffer
- * @returns {Promise<Buffer>} Animated WebP sticker buffer with metadata
+ * @param {object} [options]
+ * @param {number} [options.maxDuration=STICKER_MAX_DURATION] - Trim length in seconds
+ * @param {boolean} [options.withAudio=false] - Also extract the audio as an Ogg/Opus clip
+ * @returns {Promise<{ sticker: Buffer, audio: { buffer: Buffer, seconds: number } | null }>}
+ *   Animated WebP sticker with metadata, plus the audio clip when requested and present
  */
-async function createVideoSticker(buffer) {
+async function encodeVideoSticker(buffer, { maxDuration = STICKER_MAX_DURATION, withAudio = false } = {}) {
     const timestamp = `${Date.now()}_${randomUUID().slice(0, 8)}`;
     const inputPath = path.join(DOWNLOADS_DIR, `sticker_input_${timestamp}.mp4`);
     const preprocessedPath = path.join(DOWNLOADS_DIR, `sticker_pre_${timestamp}.mp4`);
@@ -156,6 +222,15 @@ async function createVideoSticker(buffer) {
         // Get input video metadata
         const meta = await getVideoMetadata(inputPath);
         logger.info(`Input video: ${meta.width}x${meta.height}, ${meta.duration.toFixed(2)}s, ${meta.fps.toFixed(1)}fps`);
+
+        let audio = null;
+        if (withAudio) {
+            if (await hasAudioStream(inputPath)) {
+                audio = await extractStickerAudio(inputPath, maxDuration);
+            } else {
+                logger.info("Video has no audio track; making a silent sticker");
+            }
+        }
 
         // --- Phase 1: Preprocess to a small intermediate MP4 ---
         // This runs once and produces a tiny file that the quality loop
@@ -172,8 +247,8 @@ async function createVideoSticker(buffer) {
         const preArgs = ["-i", inputPath];
 
         // Trim duration if needed
-        if (meta.duration > STICKER_MAX_DURATION) {
-            preArgs.push("-t", STICKER_MAX_DURATION.toString());
+        if (meta.duration > maxDuration) {
+            preArgs.push("-t", maxDuration.toString());
         }
 
         preArgs.push(
@@ -259,7 +334,7 @@ async function createVideoSticker(buffer) {
         await safeUnlink(preprocessedPath);
 
         // Return best effort even if still over size limit
-        return stickerBuffer;
+        return { sticker: stickerBuffer, audio };
     } catch (error) {
         logger.error("Video sticker creation failed:", error.message);
         await safeUnlink(inputPath);
@@ -328,13 +403,29 @@ async function createSticker(buffer, isVideo = false) {
 
     if (isVideo) {
         logger.info(`Input video size: ${(buffer.length / 1024).toFixed(1)}KB`);
-        return await createVideoSticker(buffer);
+        return (await encodeVideoSticker(buffer)).sticker;
     }
 
     return await createImageSticker(buffer);
 }
 
+/**
+ * Creates an audio sticker from a video: the animated sticker plus the first
+ * AUDIO_STICKER_MAX_DURATION seconds of its sound as a voice clip.
+ *
+ * @param {Buffer} buffer - Video buffer
+ * @returns {Promise<{ sticker: Buffer, audio: { buffer: Buffer, seconds: number } | null }>}
+ *   `audio` is null when the video has no sound
+ */
+async function createAudioSticker(buffer) {
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+        throw new Error("Invalid buffer provided for sticker creation");
+    }
+    logger.info(`Input video size (audio sticker): ${(buffer.length / 1024).toFixed(1)}KB`);
+    return await encodeVideoSticker(buffer, { maxDuration: AUDIO_STICKER_MAX_DURATION, withAudio: true });
+}
+
 module.exports = {
     createSticker,
-    createVideoSticker,
+    createAudioSticker,
 };

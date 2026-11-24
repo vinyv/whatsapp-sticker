@@ -116,7 +116,7 @@ function markOffline() {
  * Runs a download job on the worker and waits for the file.
  * Falls back to the legacy blocking endpoint if the worker predates jobs.
  *
- * @param {string} type - Job type: download | fullres | audio | sticker-src
+ * @param {string} type - Job type: download | fullres | audio | sticker-src | sticker-src-audio
  * @param {string} url - Media URL
  * @param {boolean} [keepFile=false] - Keep file on the worker after sending
  * @returns {Promise<{ buffer: Buffer, title: string, fileName: string }>}
@@ -235,14 +235,16 @@ async function workerAudio(url, keepFile = false) {
 }
 
 /**
- * Downloads a video via yt-dlp for sticker creation (/ds command).
+ * Downloads a video via yt-dlp for sticker creation (/ds and /dsa commands).
  * Only downloads — sticker creation happens on cloud.
  *
  * @param {string} url - Video URL
+ * @param {object} [options]
+ * @param {boolean} [options.withAudio=false] - Keep the sound (/dsa)
  * @returns {Promise<Buffer>} Video buffer
  */
-async function workerDownloadStickerSource(url) {
-    const { buffer } = await runJob("sticker-src", url);
+async function workerDownloadStickerSource(url, { withAudio = false } = {}) {
+    const { buffer } = await runJob(withAudio ? "sticker-src-audio" : "sticker-src", url);
     return buffer;
 }
 

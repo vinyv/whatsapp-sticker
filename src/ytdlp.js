@@ -5,9 +5,14 @@
  */
 
 const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const crypto = require("crypto");
 const {
     YTDLP_PATH,
     COOKIES_PATH,
+    X_COOKIES_PATH,
+    X_COOKIES_FROM_BROWSER,
     DOWNLOAD_TIMEOUT,
     YTDLP_UPDATE_CHANNEL,
     YTDLP_UPDATE_INTERVAL_MS,
@@ -31,17 +36,61 @@ const JS_RUNTIME_ARGS =
 /** @type {string|null} Cached yt-dlp version string */
 let cachedVersion = null;
 
+/** Hosts that use the X-specific cookie source */
+const X_HOSTS = /(^|\.)(x\.com|twitter\.com)$/i;
+
 /**
- * Common args for every yt-dlp invocation. Cookies are passed whenever the
- * file exists — they're domain-scoped, so sites that don't need them ignore them.
- * @returns {string[]}
+ * @param {string} [url]
+ * @returns {boolean} True if the URL points at x.com / twitter.com
  */
-function baseArgs() {
-    const args = ["--no-playlist", "--no-warnings", ...JS_RUNTIME_ARGS];
-    if (fs.existsSync(COOKIES_PATH)) {
-        args.push("--cookies", COOKIES_PATH);
+function isXUrl(url) {
+    try {
+        return X_HOSTS.test(new URL(url).hostname);
+    } catch {
+        return false;
     }
-    return args;
+}
+
+/**
+ * yt-dlp writes its cookie jar back into the --cookies file when it exits,
+ * which replaced the exported login cookies with guest ones. Give each run
+ * its own throwaway copy so the original export is never modified (and
+ * concurrent jobs don't race on the same file).
+ * @param {string} src - Cookie file to copy
+ * @returns {string} Path of the temporary copy
+ */
+function tempCookieCopy(src) {
+    const tmp = path.join(os.tmpdir(), `wppbot-cookies-${crypto.randomUUID()}.txt`);
+    fs.copyFileSync(src, tmp);
+    return tmp;
+}
+
+/**
+ * Common args for every yt-dlp invocation. x.com / twitter.com links use
+ * X_COOKIES_FROM_BROWSER or X_COOKIES_PATH when configured; everything else
+ * (and X as a fallback) uses COOKIES_PATH. Cookies are domain-scoped, so
+ * sites that don't need them ignore them.
+ * @param {string} [url] - Target URL, used to pick the cookie source
+ * @returns {{ args: string[], cleanup: () => void }}
+ */
+function baseArgs(url) {
+    const args = ["--no-playlist", "--no-warnings", ...JS_RUNTIME_ARGS];
+    let tmp = null;
+
+    if (isXUrl(url) && X_COOKIES_FROM_BROWSER) {
+        args.push("--cookies-from-browser", X_COOKIES_FROM_BROWSER);
+    } else {
+        const file = isXUrl(url) && fs.existsSync(X_COOKIES_PATH) ? X_COOKIES_PATH : COOKIES_PATH;
+        if (fs.existsSync(file)) {
+            tmp = tempCookieCopy(file);
+            args.push("--cookies", tmp);
+        }
+    }
+
+    const cleanup = () => {
+        if (tmp) fs.rm(tmp, { force: true }, () => {});
+    };
+    return { args, cleanup };
 }
 
 /**
@@ -54,15 +103,21 @@ function baseArgs() {
  * @returns {Promise<object>} Parsed info JSON (empty object if unparseable)
  */
 async function downloadWithInfo(url, args) {
-    const fullArgs = [...args, ...baseArgs(), "-j", "--no-simulate", url];
+    const base = baseArgs(url);
+    const fullArgs = [...args, ...base.args, "-j", "--no-simulate", url];
     logger.info("Running yt-dlp:", fullArgs.join(" "));
 
-    const { stdout } = await execFileAsync(YTDLP_PATH, fullArgs, {
-        timeout: DOWNLOAD_TIMEOUT,
-        encoding: "utf8",
-        env: UTF8_ENV,
-        maxBuffer: 64 * 1024 * 1024, // info JSON can be several MB (formats list)
-    });
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(YTDLP_PATH, fullArgs, {
+            timeout: DOWNLOAD_TIMEOUT,
+            encoding: "utf8",
+            env: UTF8_ENV,
+            maxBuffer: 64 * 1024 * 1024, // info JSON can be several MB (formats list)
+        }));
+    } finally {
+        base.cleanup();
+    }
 
     // -j prints one JSON object per line; take the last valid one
     const lines = stdout.trim().split("\n").reverse();
@@ -83,12 +138,18 @@ async function downloadWithInfo(url, args) {
  * @returns {Promise<Array<{url: string, title: string, duration: number|null, channel: string}>>}
  */
 async function search(query, limit = 5) {
-    const args = [`ytsearch${limit}:${query}`, "-j", "--flat-playlist", ...baseArgs()];
-    const { stdout } = await execFileAsync(YTDLP_PATH, args, {
-        timeout: DOWNLOAD_TIMEOUT,
-        encoding: "utf8",
-        env: UTF8_ENV,
-    });
+    const base = baseArgs();
+    const args = [`ytsearch${limit}:${query}`, "-j", "--flat-playlist", ...base.args];
+    let stdout;
+    try {
+        ({ stdout } = await execFileAsync(YTDLP_PATH, args, {
+            timeout: DOWNLOAD_TIMEOUT,
+            encoding: "utf8",
+            env: UTF8_ENV,
+        }));
+    } finally {
+        base.cleanup();
+    }
 
     const results = [];
     for (const line of stdout.trim().split("\n").filter(Boolean)) {
