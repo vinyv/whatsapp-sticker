@@ -30,6 +30,7 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestWaWebVersion,
+  normalizeMessageContent,
 } = require("@whiskeysockets/baileys");
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
@@ -258,6 +259,10 @@ async function startBot() {
  * @param {object} msg - Message object
  */
 async function handleMessage(sock, msg) {
+  // Disappearing-message chats, view-once media and edits arrive wrapped
+  // (ephemeralMessage, viewOnceMessage, ...). Unwrap so the commands see them.
+  msg = { ...msg, message: normalizeMessageContent(msg.message) };
+
   const chatId = msg.key.remoteJid;
   const userId = msg.key.participant || msg.key.remoteJid;
 
@@ -269,6 +274,11 @@ async function handleMessage(sock, msg) {
 
   // Get effective text (text message or caption)
   const text = textMessage || caption;
+
+  if (text.startsWith("/")) {
+    const where = chatId.endsWith("@g.us") ? "group" : "private";
+    logger.info(`Command "${text.slice(0, 40)}" in ${where} chat (${Object.keys(msg.message || {}).join(",")})`);
+  }
 
   // 1. Check for active session — route text to session handler
   if (text && getSession(userId)) {

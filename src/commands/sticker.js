@@ -3,7 +3,7 @@
  * @module commands/sticker
  */
 
-const { downloadMediaMessage } = require("@whiskeysockets/baileys");
+const { downloadMediaMessage, normalizeMessageContent } = require("@whiskeysockets/baileys");
 const { createSticker } = require("../sticker");
 const { createReactHelper, sendWithBotReaction, logger } = require("../utils");
 const { sendAudioStickerFromVideo } = require("./media");
@@ -60,7 +60,8 @@ async function handleStickerCommand(sock, msg, chatId, options) {
 
         if (isReplyCommand) {
             // Handle reply-to-media command
-            const quotedMsg = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            // The quoted media may itself be wrapped (view-once, disappearing chat)
+            const quotedMsg = normalizeMessageContent(msg.message?.extendedTextMessage?.contextInfo?.quotedMessage);
 
             if (!quotedMsg) {
                 logger.info("No quoted message found.");
