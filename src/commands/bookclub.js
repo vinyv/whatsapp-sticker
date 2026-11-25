@@ -1022,6 +1022,7 @@ async function handleBookClubCommand(sock, msg, chatId, match) {
                 `── Sticker ──\n` +
                 `🖼️ /s — Converter imagem/vídeo em sticker\n` +
                 `🔊 /sa — Sticker com o som do vídeo\n` +
+                `🎙️ /sv — Sticker do vídeo com o som do áudio/vídeo que você manda depois\n` +
                 `_(envie como legenda ou responda a uma mídia)_\n\n` +
                 `── Download ──\n` +
                 `📥 /d [url] — Baixar vídeo (até 720p)\n` +

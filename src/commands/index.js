@@ -4,7 +4,7 @@
  */
 
 const { matchDownloadCommand, handleDownloadCommand } = require("./download");
-const { matchStickerCommand, handleStickerCommand } = require("./sticker");
+const { matchStickerCommand, handleStickerCommand, handlePendingStickerAudio } = require("./sticker");
 const { matchSearchReply, handleSearchReply, handleSearchCommand } = require("./search");
 const {
     matchBookClubCommand,
@@ -28,6 +28,7 @@ module.exports = {
     // Sticker
     matchStickerCommand,
     handleStickerCommand,
+    handlePendingStickerAudio,
 
     // Book Club
     matchBookClubCommand,

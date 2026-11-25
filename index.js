@@ -7,6 +7,7 @@
  * Commands:
  *   /s - Convert image/video to sticker (runs on cloud)
  *   /sa - Convert video to an audio sticker that plays its sound (runs on cloud)
+ *   /sv - Video sticker that plays an audio sent in the next message
  *   /d <url> - Download video and send (via local worker)
  *   /dd <url> - Download video and keep file (via local worker)
  *   /da <url> - Download audio (MP3) and send (via local worker)
@@ -46,6 +47,7 @@ const {
   handleDownloadCommand,
   matchStickerCommand,
   handleStickerCommand,
+  handlePendingStickerAudio,
   matchSearchReply,
   handleSearchReply,
   matchBookClubCommand,
@@ -291,6 +293,9 @@ async function handleMessage(sock, msg) {
     }
   }
 
+  // 1a. Audio for a pending /sv (video sent first, audio next)
+  if (await handlePendingStickerAudio(sock, msg, chatId)) return;
+
   // 1b. Status check (/ping)
   if (matchPingCommand(textMessage)) {
     await handlePingCommand(sock, msg, chatId);
@@ -332,13 +337,14 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // 7. Sticker commands (/s, /sa)
-  const { isDirectCommand, isReplyCommand, withAudio } = matchStickerCommand(caption, textMessage);
+  // 7. Sticker commands (/s, /sa, /sv)
+  const { isDirectCommand, isReplyCommand, withAudio, waitForAudio } = matchStickerCommand(caption, textMessage);
   if (isDirectCommand || isReplyCommand) {
     await handleStickerCommand(sock, msg, chatId, {
       isDirectCommand,
       isReplyCommand,
       withAudio,
+      waitForAudio,
       imageMessage,
       videoMessage,
     });

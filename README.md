@@ -87,6 +87,7 @@ local-worker\start.bat
 | `/dd <url>` | Same as `/d`, but keep the file on the PC | |
 | `/da <url>` / `/dda <url>` | Download audio as MP3 (`/dda` keeps the file) | |
 | `/sa` | Video to audio sticker: plays the video's sound when tapped (Caption or Reply) | Reply to a video with `/sa` |
+| `/sv` | Video sticker that plays the sound of the next audio or video you send, cut to the first video's length | Reply `/sv` to a video, then send a voice note |
 | `/ds <url>` | Download the first seconds of a video as a sticker | |
 | `/dsa <url>` | Same as `/ds`, but an audio sticker with the video's sound | |
 | `/ping` | Bot uptime, PC worker status and yt-dlp version | |

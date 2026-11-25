@@ -110,9 +110,10 @@ async function fetchAndSend(sock, chatId, command, url, { localFallback = false 
  * @param {object} sock - WhatsApp socket connection
  * @param {string} chatId - Chat ID
  * @param {Buffer} videoBuffer - Source video
+ * @param {Buffer} [audioSource] - Separate audio to use instead of the video's sound (/sv)
  */
-async function sendAudioStickerFromVideo(sock, chatId, videoBuffer) {
-    const { sticker, audio } = await createAudioSticker(videoBuffer);
+async function sendAudioStickerFromVideo(sock, chatId, videoBuffer, audioSource) {
+    const { sticker, audio } = await createAudioSticker(videoBuffer, audioSource);
     logger.info("Sticker created, size:", sticker.length, "bytes");
 
     if (!audio) {

@@ -204,10 +204,12 @@ async function extractStickerAudio(inputPath, maxDuration) {
  * @param {object} [options]
  * @param {number} [options.maxDuration=STICKER_MAX_DURATION] - Trim length in seconds
  * @param {boolean} [options.withAudio=false] - Also extract the audio as an Ogg/Opus clip
+ * @param {Buffer} [options.audioSource] - Take the audio from this file instead of the
+ *   video's own track, cut to the (trimmed) video's length (implies withAudio)
  * @returns {Promise<{ sticker: Buffer, audio: { buffer: Buffer, seconds: number } | null }>}
  *   Animated WebP sticker with metadata, plus the audio clip when requested and present
  */
-async function encodeVideoSticker(buffer, { maxDuration = STICKER_MAX_DURATION, withAudio = false } = {}) {
+async function encodeVideoSticker(buffer, { maxDuration = STICKER_MAX_DURATION, withAudio = false, audioSource } = {}) {
     const timestamp = `${Date.now()}_${randomUUID().slice(0, 8)}`;
     const inputPath = path.join(DOWNLOADS_DIR, `sticker_input_${timestamp}.mp4`);
     const preprocessedPath = path.join(DOWNLOADS_DIR, `sticker_pre_${timestamp}.mp4`);
@@ -224,7 +226,17 @@ async function encodeVideoSticker(buffer, { maxDuration = STICKER_MAX_DURATION, 
         logger.info(`Input video: ${meta.width}x${meta.height}, ${meta.duration.toFixed(2)}s, ${meta.fps.toFixed(1)}fps`);
 
         let audio = null;
-        if (withAudio) {
+        if (audioSource) {
+            // Separate audio (/sv): cut it to the sticker's length
+            const audioPath = path.join(DOWNLOADS_DIR, `sticker_audio_src_${timestamp}`);
+            try {
+                await fsPromises.writeFile(audioPath, audioSource);
+                if (!(await hasAudioStream(audioPath))) throw new Error("O áudio enviado não tem som");
+                audio = await extractStickerAudio(audioPath, Math.min(meta.duration, maxDuration));
+            } finally {
+                await safeUnlink(audioPath);
+            }
+        } else if (withAudio) {
             if (await hasAudioStream(inputPath)) {
                 audio = await extractStickerAudio(inputPath, maxDuration);
             } else {
@@ -414,15 +426,21 @@ async function createSticker(buffer, isVideo = false) {
  * AUDIO_STICKER_MAX_DURATION seconds of its sound as a voice clip.
  *
  * @param {Buffer} buffer - Video buffer
+ * @param {Buffer} [audioSource] - Use this audio (voice note or file) instead of the
+ *   video's sound; it is cut to the video's length
  * @returns {Promise<{ sticker: Buffer, audio: { buffer: Buffer, seconds: number } | null }>}
- *   `audio` is null when the video has no sound
+ *   `audio` is null when the video has no sound (and no audioSource was given)
  */
-async function createAudioSticker(buffer) {
+async function createAudioSticker(buffer, audioSource) {
     if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
         throw new Error("Invalid buffer provided for sticker creation");
     }
     logger.info(`Input video size (audio sticker): ${(buffer.length / 1024).toFixed(1)}KB`);
-    return await encodeVideoSticker(buffer, { maxDuration: AUDIO_STICKER_MAX_DURATION, withAudio: true });
+    return await encodeVideoSticker(buffer, {
+        maxDuration: AUDIO_STICKER_MAX_DURATION,
+        withAudio: true,
+        audioSource,
+    });
 }
 
 module.exports = {
